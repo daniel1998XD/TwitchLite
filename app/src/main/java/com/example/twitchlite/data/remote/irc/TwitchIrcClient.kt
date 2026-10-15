@@ -30,6 +30,10 @@ class TwitchIrcClient(
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
+    // Emite o ID numérico do canal (room-id) assim que detectado nas tags IRC (ROOMSTATE/PRIVMSG)
+    private val _currentRoomId = MutableStateFlow<String?>(null)
+    val currentRoomId: StateFlow<String?> = _currentRoomId.asStateFlow()
+
     fun connect(channel: String, oauthToken: String?, username: String?) {
         disconnect(clearMessages = true)
         isIntentionalDisconnect = false
@@ -37,7 +41,6 @@ class TwitchIrcClient(
 
         currentChannel = channel.lowercase()
         currentToken = oauthToken
-        // Caso o usuário não tenha token, permite leitura anônima via justinfan
         currentUsername = username?.lowercase()?.ifBlank { "justinfan12345" } ?: "justinfan12345"
 
         openSocketConnection()
@@ -110,6 +113,13 @@ class TwitchIrcClient(
         if (line.startsWith("PING")) {
             ws.send(line.replace("PING", "PONG"))
             return
+        }
+
+        // Captura o room-id do canal para buscar os emotes da 7TV, BTTV e FFZ
+        if (_currentRoomId.value == null && line.contains("room-id=")) {
+            Regex("(?:^|;)room-id=([0-9]+)").find(line)?.groupValues?.get(1)?.let { detectedId ->
+                _currentRoomId.value = detectedId
+            }
         }
 
         if (line.contains("PRIVMSG")) {
@@ -187,6 +197,7 @@ class TwitchIrcClient(
         reconnectJob?.cancel()
         webSocket?.close(1000, "Saindo do canal")
         webSocket = null
+        _currentRoomId.value = null
         if (clearMessages) {
             _messages.value = emptyList()
         }

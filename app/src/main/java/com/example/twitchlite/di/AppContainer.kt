@@ -2,7 +2,10 @@ package com.example.twitchlite.di
 
 import android.content.Context
 import com.example.twitchlite.data.local.TokenManager
+import com.example.twitchlite.data.remote.AutoClaimRepository
+import com.example.twitchlite.data.remote.EmoteRepository
 import com.example.twitchlite.data.remote.StreamExtractorRepository
+import com.example.twitchlite.data.remote.api.ThirdPartyEmoteApi
 import com.example.twitchlite.data.remote.api.TwitchAuthRefreshApi
 import com.example.twitchlite.data.remote.api.TwitchGqlApi
 import com.example.twitchlite.data.remote.api.TwitchHelixApi
@@ -17,12 +20,8 @@ import java.util.concurrent.TimeUnit
 class AppContainer(context: Context) {
 
     companion object {
-        /**
-         * Para usar a API oficial Helix (/streams/followed), crie um App em https://dev.twitch.tv/console
-         * com Redirect URI: twitchlite://auth e insira seu Client-ID abaixo (ou pelo diálogo na UI).
-         */
         var TWITCH_CLIENT_ID: String = ""
-        var TWITCH_CLIENT_SECRET: String = "" // Opcional (usado apenas se tiver Refresh Token)
+        var TWITCH_CLIENT_SECRET: String = ""
         const val OAUTH_REDIRECT_URI = "http://localhost"
     }
 
@@ -75,7 +74,21 @@ class AppContainer(context: Context) {
         .build()
         .create(TwitchGqlApi::class.java)
 
+    private val thirdPartyEmoteApi: ThirdPartyEmoteApi = Retrofit.Builder()
+        .baseUrl("https://7tv.io/")
+        .client(okHttpClient)
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+        .create(ThirdPartyEmoteApi::class.java)
+
     val streamExtractorRepository = StreamExtractorRepository(
+        gqlApi = gqlApi,
+        tokenManager = tokenManager
+    )
+
+    val emoteRepository = EmoteRepository(api = thirdPartyEmoteApi)
+
+    val autoClaimRepository = AutoClaimRepository(
         gqlApi = gqlApi,
         tokenManager = tokenManager
     )

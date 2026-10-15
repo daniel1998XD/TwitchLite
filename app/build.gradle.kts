@@ -75,8 +75,9 @@ dependencies {
     // Segurança (EncryptedSharedPreferences para Tokens OAuth)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // Coil (Carregamento de Thumbnails e Emotes da Twitch)
+    // Coil (Carregamento de Thumbnails e Emotes Estáticos + Animados 7TV/BTTV)
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-gif:2.7.0")
 
     // Testes / Debug
     debugImplementation("androidx.compose.ui:ui-tooling")

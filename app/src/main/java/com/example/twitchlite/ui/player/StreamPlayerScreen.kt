@@ -3,16 +3,27 @@ package com.example.twitchlite.ui.player
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.view.View
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -71,29 +82,58 @@ fun StreamPlayerScreen(
     viewModel: StreamViewModel,
     onBack: () -> Unit
 ) {
-    LaunchedEffect(channelLogin) {
-        viewModel.loadStream(channelLogin)
-    }
-
-    BackHandler {
-        viewModel.stopStream()
-        onBack()
-    }
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val isInPipMode = rememberIsInPipMode()
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
-
-    val isInPipMode = rememberIsInPipMode()
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val context = LocalContext.current
+    val thirdPartyEmotes by viewModel.thirdPartyEmotes.collectAsStateWithLifecycle()
+    val autoClaimNotice by viewModel.lastAutoClaimNotification.collectAsStateWithLifecycle()
 
     var availableQualities by remember { mutableStateOf<List<VideoQualityOption>>(emptyList()) }
     var selectedQuality by remember { mutableStateOf<VideoQualityOption?>(null) }
     var showQualitySheet by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
 
-    // Ativa o modo Picture-in-Picture automático quando o stream está em reprodução
+    LaunchedEffect(channelLogin) {
+        viewModel.loadStream(channelLogin)
+    }
+
+    // Exibe aviso discreto caso o Auto-Claim tenha resgatado Pontos ou Drops
+    LaunchedEffect(autoClaimNotice) {
+        val notice = autoClaimNotice
+        if (!notice.isNullOrBlank()) {
+            Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
+            viewModel.consumeAutoClaimNotification()
+        }
+    }
+
+    // Função para alternar entre Modo Retrato e Paisagem (Fullscreen)
+    val toggleFullscreen: () -> Unit = {
+        val activity = context.findActivity()
+        if (activity != null) {
+            if (isLandscape) {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+        }
+    }
+
+    // Se estiver em Fullscreen (Landscape), o botão Voltar retorna ao modo Retrato primeiro
+    BackHandler {
+        val activity = context.findActivity()
+        if (isLandscape && activity != null) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            viewModel.stopStream()
+            onBack()
+        }
+    }
+
     LaunchedEffect(uiState) {
         val mainActivity = context.findActivity() as? MainActivity
         mainActivity?.setPipEligible(uiState is StreamUiState.Ready)
@@ -101,9 +141,10 @@ fun StreamPlayerScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            val mainActivity = context.findActivity() as? MainActivity
-            mainActivity?.setPipEligible(false)
-            val window = context.findActivity()?.window
+            val activity = context.findActivity()
+            (activity as? MainActivity)?.setPipEligible(false)
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            val window = activity?.window
             if (window != null) {
                 WindowCompat.getInsetsController(window, window.decorView)
                     .show(WindowInsetsCompat.Type.systemBars())
@@ -111,7 +152,6 @@ fun StreamPlayerScreen(
         }
     }
 
-    // Oculta System Bars no modo Paisagem (Fullscreen) ou dentro do PiP
     LaunchedEffect(isLandscape, isInPipMode) {
         val window = context.findActivity()?.window ?: return@LaunchedEffect
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -154,43 +194,53 @@ fun StreamPlayerScreen(
         }
 
         is StreamUiState.Ready -> {
+            // Badge curto da qualidade selecionada (ex: "1080p60" ou "Auto")
+            val shortQualityBadge = remember(selectedQuality) {
+                selectedQuality?.label?.substringBefore(" ") ?: "Auto"
+            }
+
             val videoSurfaceContent = remember(state.hlsUrl, state.bufferConfig) {
-                movableContentOf<Modifier, Boolean> { playerModifier, inPip ->
+                movableContentOf<Modifier, Boolean, Boolean> { playerModifier, inPip, landscapeMode ->
                     CustomExoPlayerWithTrackSelector(
                         hlsUrl = state.hlsUrl,
                         bufferConfig = state.bufferConfig,
                         isInPipMode = inPip,
-                        selectedQualityLabel = selectedQuality?.label ?: "Auto",
+                        isLandscape = landscapeMode,
+                        selectedQualityBadge = shortQualityBadge,
                         onQualitiesExtracted = { qualities -> availableQualities = qualities },
                         onPlayerReady = { player -> activePlayer = player },
                         onOpenQualitySheet = { showQualitySheet = true },
+                        onToggleFullscreen = toggleFullscreen,
                         modifier = playerModifier
                     )
                 }
             }
 
             if (isInPipMode || isLandscape) {
-                // MODO FULLSCREEN (PAISAGEM) OU PiP: Chat desmontado, Vídeo 100%
+                // MODO FULLSCREEN (PAISAGEM) OU PiP
                 videoSurfaceContent(
                     Modifier
                         .fillMaxSize()
                         .background(Color.Black),
-                    isInPipMode
+                    isInPipMode,
+                    isLandscape
                 )
             } else {
-                // MODO RETRATO: Player 16:9 no topo + Chat IRC com Emotes abaixo
+                // MODO RETRATO: Player 16:9 no topo + Chat com Emotes (Twitch + 7TV + BTTV + FFZ)
                 Column(modifier = Modifier.fillMaxSize()) {
                     videoSurfaceContent(
                         Modifier
                             .fillMaxWidth()
                             .aspectRatio(16f / 9f)
                             .background(Color.Black),
+                        false,
                         false
                     )
 
                     LiveChatSection(
                         channelName = state.channelLogin,
                         messages = messages,
+                        thirdPartyEmotes = thirdPartyEmotes,
                         onSendMessage = viewModel::sendChatMessage,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -226,13 +276,18 @@ fun CustomExoPlayerWithTrackSelector(
     hlsUrl: String,
     bufferConfig: BufferConfig,
     isInPipMode: Boolean,
-    selectedQualityLabel: String,
+    isLandscape: Boolean,
+    selectedQualityBadge: String,
     onQualitiesExtracted: (List<VideoQualityOption>) -> Unit,
     onPlayerReady: (ExoPlayer) -> Unit,
     onOpenQualitySheet: () -> Unit,
+    onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+
+    // Estado sincronizado com a visibilidade dos controles nativos do ExoPlayer
+    var areControlsVisible by remember { mutableStateOf(true) }
 
     val exoPlayer = remember(hlsUrl, bufferConfig) {
         val trackSelector = DefaultTrackSelector(context).apply {
@@ -301,6 +356,16 @@ fun CustomExoPlayerWithTrackSelector(
                     player = exoPlayer
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
+                    controllerAutoShow = true
+                    controllerShowTimeoutMs = 3000
+
+                    // Sincroniza a visibilidade da sobreposição Compose (Qualidade + Fullscreen)
+                    // com o toque na tela do PlayerView
+                    setControllerVisibilityListener(
+                        PlayerView.ControllerVisibilityListener { visibility ->
+                            areControlsVisible = (visibility == View.VISIBLE)
+                        }
+                    )
                 }
             },
             update = { playerView ->
@@ -308,22 +373,64 @@ fun CustomExoPlayerWithTrackSelector(
                 playerView.useController = !isInPipMode
                 if (isInPipMode) {
                     playerView.hideController()
+                    areControlsVisible = false
                 }
             }
         )
 
-        if (!isInPipMode) {
-            FilledTonalButton(
-                onClick = onOpenQualitySheet,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp)
+        // Barra superior direita sincronizada com os controles do ExoPlayer
+        AnimatedVisibility(
+            visible = areControlsVisible && !isInPipMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp)
+        ) {
+            Surface(
+                color = Color(0xAA000000),
+                shape = RoundedCornerShape(24.dp)
             ) {
-                Text(
-                    text = "Qualidade: $selectedQualityLabel",
-                    style = MaterialTheme.typography.labelMedium
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    // 1. Botão de Qualidade (Engrenagem + Resolução atual)
+                    TextButton(
+                        onClick = onOpenQualitySheet,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Qualidade",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = selectedQualityBadge,
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // 2. Botão de Tela Cheia (Fullscreen) imediatamente ao lado direito da engrenagem
+                    IconButton(
+                        onClick = onToggleFullscreen,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isLandscape) {
+                                Icons.Default.FullscreenExit
+                            } else {
+                                Icons.Default.Fullscreen
+                            },
+                            contentDescription = if (isLandscape) "Sair da Tela Cheia" else "Tela Cheia",
+                            tint = Color.White
+                        )
+                    }
+                }
             }
         }
     }
@@ -439,11 +546,13 @@ private fun QualitySelectionSheetContent(
 fun LiveChatSection(
     channelName: String,
     messages: List<ChatMessage>,
+    thirdPartyEmotes: Map<String, String>,
     onSendMessage: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val animatedImageLoader = rememberAnimatedEmoteImageLoader()
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -456,12 +565,26 @@ fun LiveChatSection(
             .background(Color(0xFF0E0E10))
             .padding(8.dp)
     ) {
-        Text(
-            text = "CHAT AO VIVO • #$channelName",
-            style = MaterialTheme.typography.labelMedium,
-            color = Color.LightGray,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "CHAT AO VIVO • #$channelName",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.LightGray
+            )
+            if (thirdPartyEmotes.isNotEmpty()) {
+                Text(
+                    text = "7TV/BTTV/FFZ (${thirdPartyEmotes.size})",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF9146FF)
+                )
+            }
+        }
         HorizontalDivider(color = Color(0xFF26262C))
 
         LazyColumn(
@@ -473,7 +596,11 @@ fun LiveChatSection(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             items(messages, key = { it.id }) { msg ->
-                ChatMessageItem(message = msg)
+                ChatMessageItem(
+                    message = msg,
+                    thirdPartyEmotes = thirdPartyEmotes,
+                    imageLoader = animatedImageLoader
+                )
             }
         }
 
