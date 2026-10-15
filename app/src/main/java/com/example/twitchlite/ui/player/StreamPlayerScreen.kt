@@ -6,6 +6,7 @@ import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -15,10 +16,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fullscreen
@@ -94,14 +97,15 @@ fun StreamPlayerScreen(
 
     var availableQualities by remember { mutableStateOf<List<VideoQualityOption>>(emptyList()) }
     var selectedQuality by remember { mutableStateOf<VideoQualityOption?>(null) }
-    var showQualitySheet by remember { mutableStateOf(false) }
+    var isAudioOnly by remember { mutableStateOf(false) }
+    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
 
     LaunchedEffect(channelLogin) {
         viewModel.loadStream(channelLogin)
     }
 
-    // Exibe aviso discreto caso o Auto-Claim tenha resgatado Pontos ou Drops
     LaunchedEffect(autoClaimNotice) {
         val notice = autoClaimNotice
         if (!notice.isNullOrBlank()) {
@@ -110,11 +114,15 @@ fun StreamPlayerScreen(
         }
     }
 
-    // Função para alternar entre Modo Retrato e Paisagem (Fullscreen)
+    // TOGGLE DE TELA CHEIA CORRIGIDO:
+    // Consulta a orientação real diretamente na Activity no momento do clique,
+    // evitando que o movableContentOf retenha um valor booleano antigo.
     val toggleFullscreen: () -> Unit = {
         val activity = context.findActivity()
         if (activity != null) {
-            if (isLandscape) {
+            val currentlyLandscape =
+                activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            if (currentlyLandscape) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             } else {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -122,10 +130,12 @@ fun StreamPlayerScreen(
         }
     }
 
-    // Se estiver em Fullscreen (Landscape), o botão Voltar retorna ao modo Retrato primeiro
+    // Botão Voltar do Android: se estiver em Paisagem, volta para Retrato; se já estiver em Retrato, sai da live
     BackHandler {
         val activity = context.findActivity()
-        if (isLandscape && activity != null) {
+        val currentlyLandscape =
+            activity?.resources?.configuration?.orientation == Configuration.ORIENTATION_LANDSCAPE
+        if (currentlyLandscape && activity != null) {
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -194,9 +204,12 @@ fun StreamPlayerScreen(
         }
 
         is StreamUiState.Ready -> {
-            // Badge curto da qualidade selecionada (ex: "1080p60" ou "Auto")
-            val shortQualityBadge = remember(selectedQuality) {
-                selectedQuality?.label?.substringBefore(" ") ?: "Auto"
+            val shortQualityBadge = remember(selectedQuality, isAudioOnly) {
+                when {
+                    isAudioOnly -> "Áudio"
+                    selectedQuality != null -> selectedQuality!!.label.substringBefore(" ")
+                    else -> "Auto"
+                }
             }
 
             val videoSurfaceContent = remember(state.hlsUrl, state.bufferConfig) {
@@ -209,7 +222,7 @@ fun StreamPlayerScreen(
                         selectedQualityBadge = shortQualityBadge,
                         onQualitiesExtracted = { qualities -> availableQualities = qualities },
                         onPlayerReady = { player -> activePlayer = player },
-                        onOpenQualitySheet = { showQualitySheet = true },
+                        onOpenSettingsSheet = { showSettingsSheet = true },
                         onToggleFullscreen = toggleFullscreen,
                         modifier = playerModifier
                     )
@@ -217,7 +230,6 @@ fun StreamPlayerScreen(
             }
 
             if (isInPipMode || isLandscape) {
-                // MODO FULLSCREEN (PAISAGEM) OU PiP
                 videoSurfaceContent(
                     Modifier
                         .fillMaxSize()
@@ -226,7 +238,6 @@ fun StreamPlayerScreen(
                     isLandscape
                 )
             } else {
-                // MODO RETRATO: Player 16:9 no topo + Chat com Emotes (Twitch + 7TV + BTTV + FFZ)
                 Column(modifier = Modifier.fillMaxSize()) {
                     videoSurfaceContent(
                         Modifier
@@ -249,19 +260,37 @@ fun StreamPlayerScreen(
                 }
             }
 
-            if (showQualitySheet && !isInPipMode) {
+            // Menu Unificado (Qualidade HLS + Apenas Áudio + Velocidade de Reprodução)
+            if (showSettingsSheet && !isInPipMode) {
                 ModalBottomSheet(
-                    onDismissRequest = { showQualitySheet = false }
+                    onDismissRequest = { showSettingsSheet = false }
                 ) {
-                    QualitySelectionSheetContent(
+                    UnifiedPlayerSettingsSheetContent(
                         qualities = availableQualities,
                         selectedQuality = selectedQuality,
+                        isAudioOnly = isAudioOnly,
+                        currentSpeed = playbackSpeed,
+                        onSelectAutoQuality = {
+                            isAudioOnly = false
+                            selectedQuality = null
+                            activePlayer?.let { applyVideoQualityOverride(it, null, isAudioOnly = false) }
+                            showSettingsSheet = false
+                        },
+                        onSelectAudioOnly = {
+                            isAudioOnly = true
+                            selectedQuality = null
+                            activePlayer?.let { applyVideoQualityOverride(it, null, isAudioOnly = true) }
+                            showSettingsSheet = false
+                        },
                         onSelectQuality = { chosenQuality ->
+                            isAudioOnly = false
                             selectedQuality = chosenQuality
-                            activePlayer?.let { player ->
-                                applyVideoQualityOverride(player, chosenQuality)
-                            }
-                            showQualitySheet = false
+                            activePlayer?.let { applyVideoQualityOverride(it, chosenQuality, isAudioOnly = false) }
+                            showSettingsSheet = false
+                        },
+                        onSelectSpeed = { speed ->
+                            playbackSpeed = speed
+                            activePlayer?.setPlaybackSpeed(speed)
                         }
                     )
                 }
@@ -280,13 +309,11 @@ fun CustomExoPlayerWithTrackSelector(
     selectedQualityBadge: String,
     onQualitiesExtracted: (List<VideoQualityOption>) -> Unit,
     onPlayerReady: (ExoPlayer) -> Unit,
-    onOpenQualitySheet: () -> Unit,
+    onOpenSettingsSheet: () -> Unit,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-
-    // Estado sincronizado com a visibilidade dos controles nativos do ExoPlayer
     var areControlsVisible by remember { mutableStateOf(true) }
 
     val exoPlayer = remember(hlsUrl, bufferConfig) {
@@ -359,8 +386,18 @@ fun CustomExoPlayerWithTrackSelector(
                     controllerAutoShow = true
                     controllerShowTimeoutMs = 3000
 
-                    // Sincroniza a visibilidade da sobreposição Compose (Qualidade + Fullscreen)
-                    // com o toque na tela do PlayerView
+                    // REMOVE a engrenagem nativa (exo_settings) e o botão fullscreen nativo (exo_fullscreen)
+                    // da árvore interna do PlayerView para que exista APENAS a nossa barra no canto inferior direito.
+                    findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.let { nativeGear ->
+                        (nativeGear.parent as? ViewGroup)?.removeView(nativeGear)
+                    }
+                    findViewById<View>(androidx.media3.ui.R.id.exo_fullscreen)?.let { nativeFs ->
+                        (nativeFs.parent as? ViewGroup)?.removeView(nativeFs)
+                    }
+                    findViewById<View>(androidx.media3.ui.R.id.exo_minimal_fullscreen)?.let { nativeMinFs ->
+                        (nativeMinFs.parent as? ViewGroup)?.removeView(nativeMinFs)
+                    }
+
                     setControllerVisibilityListener(
                         PlayerView.ControllerVisibilityListener { visibility ->
                             areControlsVisible = (visibility == View.VISIBLE)
@@ -378,35 +415,37 @@ fun CustomExoPlayerWithTrackSelector(
             }
         )
 
-        // Barra superior direita sincronizada com os controles do ExoPlayer
+        // Controles Unificados (Engrenagem + Fullscreen) fixos no CANTO INFERIOR DIREITO
+        // e sincronizados com o toque na tela
         AnimatedVisibility(
             visible = areControlsVisible && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(12.dp)
+                .align(Alignment.BottomEnd)
+                .padding(end = 8.dp, bottom = 6.dp)
         ) {
             Surface(
-                color = Color(0xAA000000),
-                shape = RoundedCornerShape(24.dp)
+                color = Color(0xBB000000),
+                shape = RoundedCornerShape(20.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    // 1. Botão de Qualidade (Engrenagem + Resolução atual)
+                    // 1. Engrenagem Unificada (Qualidade + Áudio + Velocidade)
                     TextButton(
-                        onClick = onOpenQualitySheet,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        onClick = onOpenSettingsSheet,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(34.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Settings,
-                            contentDescription = "Qualidade",
+                            contentDescription = "Configurações do Player",
                             tint = Color.White,
                             modifier = Modifier.size(18.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = selectedQualityBadge,
                             color = Color.White,
@@ -415,10 +454,10 @@ fun CustomExoPlayerWithTrackSelector(
                         )
                     }
 
-                    // 2. Botão de Tela Cheia (Fullscreen) imediatamente ao lado direito da engrenagem
+                    // 2. Botão Toggle de Tela Cheia (Retrato <-> Paisagem) imediatamente ao lado direito
                     IconButton(
                         onClick = onToggleFullscreen,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             imageVector = if (isLandscape) {
@@ -426,7 +465,11 @@ fun CustomExoPlayerWithTrackSelector(
                             } else {
                                 Icons.Default.Fullscreen
                             },
-                            contentDescription = if (isLandscape) "Sair da Tela Cheia" else "Tela Cheia",
+                            contentDescription = if (isLandscape) {
+                                "Voltar ao modo Retrato"
+                            } else {
+                                "Expandir para Tela Cheia"
+                            },
                             tint = Color.White
                         )
                     }
@@ -482,51 +525,108 @@ private fun extractVideoQualitiesFromTracks(tracks: Tracks): List<VideoQualityOp
 
 private fun applyVideoQualityOverride(
     exoPlayer: ExoPlayer,
-    quality: VideoQualityOption?
+    quality: VideoQualityOption?,
+    isAudioOnly: Boolean
 ) {
     val builder = exoPlayer.trackSelectionParameters.buildUpon()
-    if (quality == null) {
+    if (isAudioOnly) {
+        // Desativa a renderização da trilha de vídeo e mantém apenas o áudio da live
         builder.clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+        builder.setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
     } else {
-        builder.setOverrideForType(
-            TrackSelectionOverride(quality.trackGroup, listOf(quality.trackIndex))
-        )
+        builder.setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+        if (quality == null) {
+            builder.clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+        } else {
+            builder.setOverrideForType(
+                TrackSelectionOverride(quality.trackGroup, listOf(quality.trackIndex))
+            )
+        }
     }
     exoPlayer.trackSelectionParameters = builder.build()
 }
 
 @Composable
-private fun QualitySelectionSheetContent(
+private fun UnifiedPlayerSettingsSheetContent(
     qualities: List<VideoQualityOption>,
     selectedQuality: VideoQualityOption?,
-    onSelectQuality: (VideoQualityOption?) -> Unit
+    isAudioOnly: Boolean,
+    currentSpeed: Float,
+    onSelectAutoQuality: () -> Unit,
+    onSelectAudioOnly: () -> Unit,
+    onSelectQuality: (VideoQualityOption) -> Unit,
+    onSelectSpeed: (Float) -> Unit
 ) {
+    val speeds = listOf(0.5f, 1.0f, 1.25f, 1.5f, 2.0f)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 24.dp)
     ) {
+        // Seção 1: Velocidade de Reprodução (substitui o menu nativo do ExoPlayer)
+        Text(
+            text = "Velocidade de Reprodução",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            speeds.forEach { speed ->
+                FilterChip(
+                    selected = currentSpeed == speed,
+                    onClick = { onSelectSpeed(speed) },
+                    label = { Text("${speed}x") }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        HorizontalDivider()
+
+        // Seção 2: Qualidade de Vídeo + Modo Apenas Áudio
         Text(
             text = "Qualidade da Transmissão",
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
         )
-        HorizontalDivider()
 
+        // Opção 1: Automático (Adaptive)
         ListItem(
             headlineContent = { Text("Automático (Adaptativo)") },
             trailingContent = {
                 RadioButton(
-                    selected = selectedQuality == null,
-                    onClick = { onSelectQuality(null) }
+                    selected = !isAudioOnly && selectedQuality == null,
+                    onClick = onSelectAutoQuality
                 )
             },
-            modifier = Modifier.clickable { onSelectQuality(null) }
+            modifier = Modifier.clickable(onClick = onSelectAutoQuality)
         )
 
+        // Opção 2: Apenas Áudio (Economia de banda)
+        ListItem(
+            headlineContent = { Text("Apenas Áudio (Economia de Dados)") },
+            trailingContent = {
+                RadioButton(
+                    selected = isAudioOnly,
+                    onClick = onSelectAudioOnly
+                )
+            },
+            modifier = Modifier.clickable(onClick = onSelectAudioOnly)
+        )
+
+        // Opções do Master Playlist (.m3u8)
         qualities.forEach { option ->
-            val isSelected = selectedQuality?.trackIndex == option.trackIndex &&
+            val isSelected = !isAudioOnly &&
+                    selectedQuality?.trackIndex == option.trackIndex &&
                     selectedQuality.height == option.height
             ListItem(
                 headlineContent = { Text(option.label) },
