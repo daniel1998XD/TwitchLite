@@ -1,5 +1,6 @@
 package com.example.twitchlite.ui.player
 
+import kotlinx.coroutines.delay
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -315,6 +316,8 @@ fun CustomExoPlayerWithTrackSelector(
 ) {
     val context = LocalContext.current
     var areControlsVisible by remember { mutableStateOf(true) }
+    var isVideoPlaying by remember { mutableStateOf(false) }
+    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
 
     val exoPlayer = remember(hlsUrl, bufferConfig) {
         val trackSelector = DefaultTrackSelector(context).apply {
@@ -356,8 +359,20 @@ fun CustomExoPlayerWithTrackSelector(
             }
     }
 
+    // Auto-hide garantido no Compose + sincronizado com o PlayerView:
+    // Assim que os controles estiverem visíveis e a live estiver rodando (isPlaying),
+    // conta 3 segundos e esconde tanto a barra nativa do Media3 quanto o overlay Compose.
+    LaunchedEffect(areControlsVisible, isVideoPlaying, isInPipMode) {
+        if (areControlsVisible && isVideoPlaying && !isInPipMode) {
+            delay(3000L)
+            playerViewRef?.hideController()
+            areControlsVisible = false
+        }
+    }
+
     DisposableEffect(exoPlayer) {
         onPlayerReady(exoPlayer)
+        isVideoPlaying = exoPlayer.isPlaying
 
         val listener = object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
@@ -365,6 +380,10 @@ fun CustomExoPlayerWithTrackSelector(
                 if (extracted.isNotEmpty()) {
                     onQualitiesExtracted(extracted)
                 }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                isVideoPlaying = isPlaying
             }
         }
         exoPlayer.addListener(listener)
@@ -380,10 +399,12 @@ fun CustomExoPlayerWithTrackSelector(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 PlayerView(ctx).apply {
+                    playerViewRef = this
                     player = exoPlayer
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
                     controllerAutoShow = true
+                    controllerHideOnTouch = true
                     controllerShowTimeoutMs = 3000
 
                     // REMOVE a engrenagem nativa (exo_settings) e o botão fullscreen nativo (exo_fullscreen)
@@ -406,6 +427,7 @@ fun CustomExoPlayerWithTrackSelector(
                 }
             },
             update = { playerView ->
+                playerViewRef = playerView
                 playerView.player = exoPlayer
                 playerView.useController = !isInPipMode
                 if (isInPipMode) {
@@ -435,7 +457,11 @@ fun CustomExoPlayerWithTrackSelector(
                 ) {
                     // 1. Engrenagem Unificada (Qualidade + Áudio + Velocidade)
                     TextButton(
-                        onClick = onOpenSettingsSheet,
+                        onClick = {
+                            playerViewRef?.hideController()
+                            areControlsVisible = false
+                            onOpenSettingsSheet()
+                        },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                         modifier = Modifier.height(34.dp)
                     ) {
