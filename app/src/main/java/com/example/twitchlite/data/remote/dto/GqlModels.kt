@@ -128,3 +128,112 @@ data class TimeBasedDropSelfDto(
     @SerializedName("currentMinutesWatched") val currentMinutesWatched: Int = 0,
     @SerializedName("requiredMinutesWatched") val requiredMinutesWatched: Int = 1
 )
+
+// ==================== MODELOS GQL PARA CATEGORIAS SEGUIDAS ====================
+
+data class GqlFollowedGamesRequest(
+    @SerializedName("operationName") val operationName: String = "FollowedGames_Query",
+    @SerializedName("query") val query: String = FOLLOWED_GAMES_QUERY,
+    @SerializedName("variables") val variables: GqlFollowedGamesVariables
+) {
+    companion object {
+        const val FOLLOWED_GAMES_QUERY = """
+            query FollowedGames_Query(${'$'}login: String!, ${'$'}first: Int!) {
+              currentUser {
+                followedGames(first: ${'$'}first, type: ALL) {
+                  nodes {
+                    id
+                    name
+                    displayName
+                    boxArtURL(width: 285, height: 380)
+                    viewersCount
+                    broadcastersCount
+                  }
+                }
+              }
+              user(login: ${'$'}login) {
+                followedGames(first: ${'$'}first, type: ALL) {
+                  nodes {
+                    id
+                    name
+                    displayName
+                    boxArtURL(width: 285, height: 380)
+                    viewersCount
+                    broadcastersCount
+                  }
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlFollowedGamesVariables(
+    @SerializedName("login") val login: String,
+    @SerializedName("first") val first: Int = 30
+)
+
+data class GqlFollowedGamesResponse(
+    @SerializedName("data") val data: GqlFollowedGamesData?
+)
+
+data class GqlFollowedGamesData(
+    @SerializedName("currentUser") val currentUser: GqlUserFollowedGamesWrapper?,
+    @SerializedName("user") val user: GqlUserFollowedGamesWrapper?
+)
+
+data class GqlUserFollowedGamesWrapper(
+    @SerializedName("followedGames") val followedGames: GqlFollowedGamesConnection?
+)
+
+data class GqlFollowedGamesConnection(
+    @SerializedName("nodes") val nodes: List<GqlGameNode>?
+)
+
+data class GqlGameNode(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("displayName") val displayName: String?,
+    @SerializedName("boxArtURL") val boxArtUrl: String?,
+    @SerializedName("viewersCount") val viewersCount: Int?,
+    @SerializedName("broadcastersCount") val broadcastersCount: Int?
+) {
+    fun getFormattedBoxArtUrl(width: Int = 285, height: Int = 380): String {
+        val raw = boxArtUrl.orEmpty()
+        return if (raw.isNotBlank()) {
+            raw.replace("{width}", width.toString())
+                .replace("{height}", height.toString())
+        } else {
+            "https://static-cdn.jtvnw.net/ttv-boxart/${id}-${width}x${height}.jpg"
+        }
+    }
+}
+
+data class GqlGameLookupRequest(
+    @SerializedName("operationName") val operationName: String = "GameLookup_Query",
+    @SerializedName("query") val query: String = GAME_LOOKUP_QUERY,
+    @SerializedName("variables") val variables: Map<String, String>
+) {
+    companion object {
+        const val GAME_LOOKUP_QUERY = """
+            query GameLookup_Query(${'$'}name: String!) {
+              game(name: ${'$'}name) {
+                id
+                name
+                displayName
+                boxArtURL(width: 285, height: 380)
+                viewersCount
+                broadcastersCount
+              }
+            }
+        """
+    }
+}
+
+data class GqlGameLookupResponse(
+    @SerializedName("data") val data: GqlGameLookupData?
+)
+
+data class GqlGameLookupData(
+    @SerializedName("game") val game: GqlGameNode?
+)

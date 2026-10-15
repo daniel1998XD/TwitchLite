@@ -6,13 +6,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,21 +39,39 @@ import com.example.twitchlite.di.AppContainer
 @Composable
 fun FollowedStreamsScreen(
     viewModel: HomeViewModel,
-    onStreamClick: (channelLogin: String) -> Unit
+    onStreamClick: (channelLogin: String) -> Unit,
+    onCategoryClick: (categoryName: String) -> Unit = {}
 ) {
     val lazyPagingStreams: LazyPagingItems<HelixStreamDto> =
         viewModel.followedStreamsPagingFlow.collectAsLazyPagingItems()
     val authStatus by viewModel.authStatusMessage.collectAsStateWithLifecycle()
+    val homeUiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     var directChannelInput by remember { mutableStateOf("") }
     var showAuthDialog by remember { mutableStateOf(false) }
+
+    // Tarefa 3: Estado local para controlar o limite de 10 canais seguidos
+    var isChannelsExpanded by rememberSaveable { mutableStateOf(false) }
+
+    // Sincroniza o fallback de categorias via GQL caso os canais carreguem
+    LaunchedEffect(lazyPagingStreams.itemCount) {
+        if (lazyPagingStreams.itemCount > 0 && homeUiState.followedCategories.isEmpty()) {
+            val loadedStreams = lazyPagingStreams.itemSnapshotList.items
+            viewModel.syncCategoriesFromFollowedStreamsFallback(loadedStreams)
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("TwitchLite • Ao Vivo", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = { lazyPagingStreams.refresh() }) {
+                    IconButton(
+                        onClick = {
+                            lazyPagingStreams.refresh()
+                            viewModel.loadFollowedCategories()
+                        }
+                    ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Atualizar")
                     }
                     IconButton(onClick = { showAuthDialog = true }) {
@@ -112,15 +135,33 @@ fun FollowedStreamsScreen(
                 )
             }
 
-            // Lista Paginada (Paging 3) de Canais Seguidos
+            val totalStreams = lazyPagingStreams.itemCount
+            val visibleStreamsCount = if (isChannelsExpanded) {
+                totalStreams
+            } else {
+                minOf(totalStreams, 10)
+            }
+
+            // Feed Principal (Canais Seguidos + Categorias Seguidas)
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Cabeçalho da Seção: Canais Seguidos
+                item(key = "header_followed_channels") {
+                    Text(
+                        text = "Canais Seguidos ao Vivo",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+
+                // Tarefa 3: Lista de Canais Seguidos limitada a 10 por padrão
                 items(
-                    count = lazyPagingStreams.itemCount,
-                    key = { index -> lazyPagingStreams[index]?.id ?: index }
+                    count = visibleStreamsCount,
+                    key = { index -> lazyPagingStreams.peek(index)?.id ?: index }
                 ) { index ->
                     val stream = lazyPagingStreams[index] ?: return@items
                     StreamRowItem(
@@ -129,10 +170,33 @@ fun FollowedStreamsScreen(
                     )
                 }
 
+                // Botão "Ver mais" / "Ver menos" quando há mais de 10 canais
+                if (totalStreams > 10) {
+                    item(key = "toggle_channels_expand") {
+                        OutlinedButton(
+                            onClick = { isChannelsExpanded = !isChannelsExpanded },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = if (isChannelsExpanded) {
+                                    Icons.Default.ExpandLess
+                                } else {
+                                    Icons.Default.ExpandMore
+                                },
+                                contentDescription = null
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isChannelsExpanded) "Ver menos" else "Ver mais"
+                            )
+                        }
+                    }
+                }
+
                 // Estado inicial (Refresh) do Paging 3
                 when (val refreshState = lazyPagingStreams.loadState.refresh) {
                     is LoadState.Loading -> {
-                        item {
+                        item(key = "channels_loading") {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -144,7 +208,7 @@ fun FollowedStreamsScreen(
                         }
                     }
                     is LoadState.Error -> {
-                        item {
+                        item(key = "channels_error") {
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
@@ -174,31 +238,79 @@ fun FollowedStreamsScreen(
                     else -> Unit
                 }
 
-                // Estado de paginação (Append / Infinite Scroll)
-                when (val appendState = lazyPagingStreams.loadState.append) {
-                    is LoadState.Loading -> {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                // Estado de paginação (Append) — exibido apenas quando a lista está expandida
+                if (isChannelsExpanded) {
+                    when (val appendState = lazyPagingStreams.loadState.append) {
+                        is LoadState.Loading -> {
+                            item(key = "channels_append_loading") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                                }
+                            }
+                        }
+                        is LoadState.Error -> {
+                            item(key = "channels_append_error") {
+                                TextButton(
+                                    onClick = { lazyPagingStreams.retry() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Erro ao carregar mais (${appendState.error.localizedMessage}). Tocar para tentar novamente.")
+                                }
+                            }
+                        }
+                        else -> Unit
+                    }
+                }
+
+                // ==================== TAREFA 4: CATEGORIAS SEGUIDAS ====================
+                if (homeUiState.followedCategories.isNotEmpty() || homeUiState.isLoadingCategories) {
+                    item(key = "followed_categories_section") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                        ) {
+                            HorizontalDivider(modifier = Modifier.padding(bottom = 12.dp))
+
+                            Text(
+                                text = "Categorias Seguidas",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 10.dp)
+                            )
+
+                            if (homeUiState.isLoadingCategories && homeUiState.followedCategories.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(160.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                                }
+                            } else {
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    contentPadding = PaddingValues(vertical = 4.dp)
+                                ) {
+                                    items(
+                                        items = homeUiState.followedCategories,
+                                        key = { it.id }
+                                    ) { category ->
+                                        FollowedCategoryCard(
+                                            category = category,
+                                            onClick = { onCategoryClick(category.name) }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
-                    is LoadState.Error -> {
-                        item {
-                            TextButton(
-                                onClick = { lazyPagingStreams.retry() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Erro ao carregar mais (${appendState.error.localizedMessage}). Tocar para tentar novamente.")
-                            }
-                        }
-                    }
-                    else -> Unit
                 }
             }
         }
@@ -212,6 +324,55 @@ fun FollowedStreamsScreen(
                 showAuthDialog = false
             }
         )
+    }
+}
+
+@Composable
+private fun FollowedCategoryCard(
+    category: FollowedCategoryUiModel,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(120.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+    ) {
+        AsyncImage(
+            model = category.boxArtUrl,
+            contentDescription = category.displayName,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(3f / 4f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.DarkGray)
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = category.displayName,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (category.viewersCount > 0) {
+            Text(
+                text = "${formatViewerCount(category.viewersCount)} espectadores",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun formatViewerCount(count: Int): String {
+    return if (count >= 1000) {
+        String.format("%.1f mil", count / 1000f)
+    } else {
+        count.toString()
     }
 }
 

@@ -2,6 +2,10 @@ package com.example.twitchlite.data.remote.api
 
 import com.example.twitchlite.data.remote.dto.ChannelPointsContextResponse
 import com.example.twitchlite.data.remote.dto.DropsInventoryResponse
+import com.example.twitchlite.data.remote.dto.GqlFollowedGamesRequest
+import com.example.twitchlite.data.remote.dto.GqlFollowedGamesResponse
+import com.example.twitchlite.data.remote.dto.GqlGameLookupRequest
+import com.example.twitchlite.data.remote.dto.GqlGameLookupResponse
 import com.example.twitchlite.data.remote.dto.GqlGenericRequest
 import com.example.twitchlite.data.remote.dto.GqlPlaybackTokenRequest
 import com.example.twitchlite.data.remote.dto.GqlPlaybackTokenResponse
@@ -46,4 +50,24 @@ interface TwitchGqlApi {
         @Header("Client-ID") clientId: String,
         @Body request: GqlGenericRequest
     ): Any
+
+    @Headers(
+        "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Content-Type: application/json"
+    )
+    @POST("gql")
+    suspend fun queryFollowedGames(
+        @Header("Authorization") oauthHeader: String? = null,
+        @Body request: GqlFollowedGamesRequest
+    ): GqlFollowedGamesResponse
+
+    @Headers(
+        "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Content-Type: application/json"
+    )
+    @POST("gql")
+    suspend fun queryGameByName(
+        @Header("Authorization") oauthHeader: String? = null,
+        @Body request: GqlGameLookupRequest
+    ): GqlGameLookupResponse
 }
