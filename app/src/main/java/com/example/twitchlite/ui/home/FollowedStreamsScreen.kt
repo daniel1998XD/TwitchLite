@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
@@ -27,6 +28,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
@@ -39,8 +42,7 @@ import com.example.twitchlite.di.AppContainer
 @Composable
 fun FollowedStreamsScreen(
     viewModel: HomeViewModel,
-    onStreamClick: (channelLogin: String) -> Unit,
-    onCategoryClick: (categoryName: String) -> Unit = {}
+    onStreamClick: (channelLogin: String) -> Unit
 ) {
     val lazyPagingStreams: LazyPagingItems<HelixStreamDto> =
         viewModel.followedStreamsPagingFlow.collectAsLazyPagingItems()
@@ -148,7 +150,6 @@ fun FollowedStreamsScreen(
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Cabeçalho da Seção: Canais Seguidos
                 item(key = "header_followed_channels") {
                     Text(
                         text = "Canais Seguidos ao Vivo",
@@ -304,7 +305,7 @@ fun FollowedStreamsScreen(
                                     ) { category ->
                                         FollowedCategoryCard(
                                             category = category,
-                                            onClick = { onCategoryClick(category.name) }
+                                            onClick = { viewModel.openCategoryStreams(category) }
                                         )
                                     }
                                 }
@@ -316,6 +317,23 @@ fun FollowedStreamsScreen(
         }
     }
 
+    // Janela de Transmissões da Categoria Clicada (estilo página de Jogo da Twitch)
+    val selectedCategory = homeUiState.selectedCategory
+    if (selectedCategory != null) {
+        CategoryStreamsWindow(
+            category = selectedCategory,
+            streams = homeUiState.categoryStreams,
+            isLoading = homeUiState.isLoadingCategoryStreams,
+            errorMessage = homeUiState.categoryStreamsError,
+            onDismiss = { viewModel.closeCategoryStreams() },
+            onRefresh = { viewModel.openCategoryStreams(selectedCategory) },
+            onStreamClick = { channelLogin ->
+                viewModel.closeCategoryStreams()
+                onStreamClick(channelLogin)
+            }
+        )
+    }
+
     if (showAuthDialog) {
         OAuthConfigDialog(
             onDismiss = { showAuthDialog = false },
@@ -324,6 +342,179 @@ fun FollowedStreamsScreen(
                 showAuthDialog = false
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CategoryStreamsWindow(
+    category: FollowedCategoryUiModel,
+    streams: List<CategoryStreamUiModel>,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onStreamClick: (channelLogin: String) -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = category.displayName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Voltar"
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onRefresh) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Atualizar transmissões"
+                            )
+                        }
+                    }
+                )
+            }
+        ) { innerPadding ->
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Cabeçalho do Jogo/Categoria no estilo Twitch (Capa 3:4 + Info)
+                item(key = "category_header") {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AsyncImage(
+                                model = category.boxArtUrl,
+                                contentDescription = category.displayName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(76.dp)
+                                    .aspectRatio(3f / 4f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.DarkGray)
+                            )
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = category.displayName,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                if (category.viewersCount > 0) {
+                                    Text(
+                                        text = "${formatViewerCount(category.viewersCount)} espectadores na categoria",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Canais ao vivo ordenados por espectadores",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                when {
+                    isLoading -> {
+                        item(key = "category_streams_loading") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(48.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                        }
+                    }
+
+                    !errorMessage.isNullOrBlank() -> {
+                        item(key = "category_streams_error") {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = errorMessage,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(onClick = onRefresh) {
+                                    Text("Tentar Novamente")
+                                }
+                            }
+                        }
+                    }
+
+                    streams.isEmpty() -> {
+                        item(key = "category_streams_empty") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Nenhuma transmissão ao vivo encontrada para esta categoria no momento.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {
+                        items(
+                            items = streams,
+                            key = { it.id }
+                        ) { stream ->
+                            CategoryStreamRowItem(
+                                stream = stream,
+                                onClick = { onStreamClick(stream.userLogin) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -381,6 +572,40 @@ private fun StreamRowItem(
     stream: HelixStreamDto,
     onClick: () -> Unit
 ) {
+    StreamItemContent(
+        thumbnailUrl = stream.getFormattedThumbnail(),
+        viewerCount = stream.viewerCount,
+        userName = stream.userName,
+        gameName = stream.gameName,
+        title = stream.title,
+        onClick = onClick
+    )
+}
+
+@Composable
+private fun CategoryStreamRowItem(
+    stream: CategoryStreamUiModel,
+    onClick: () -> Unit
+) {
+    StreamItemContent(
+        thumbnailUrl = stream.thumbnailUrl,
+        viewerCount = stream.viewerCount,
+        userName = stream.userName,
+        gameName = stream.gameName,
+        title = stream.title,
+        onClick = onClick
+    )
+}
+
+@Composable
+private fun StreamItemContent(
+    thumbnailUrl: String,
+    viewerCount: Int,
+    userName: String,
+    gameName: String,
+    title: String,
+    onClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -390,8 +615,8 @@ private fun StreamRowItem(
     ) {
         Box {
             AsyncImage(
-                model = stream.getFormattedThumbnail(),
-                contentDescription = stream.title,
+                model = thumbnailUrl,
+                contentDescription = title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .width(148.dp)
@@ -400,7 +625,7 @@ private fun StreamRowItem(
                     .background(Color.DarkGray)
             )
             Text(
-                text = "AO VIVO • ${stream.viewerCount}",
+                text = "AO VIVO • $viewerCount",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White,
                 modifier = Modifier
@@ -413,18 +638,18 @@ private fun StreamRowItem(
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = stream.userName,
+                text = userName,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = stream.gameName,
+                text = gameName,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = stream.title,
+                text = title,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis

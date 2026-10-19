@@ -2,6 +2,8 @@ package com.example.twitchlite.data.remote.api
 
 import com.example.twitchlite.data.remote.dto.ChannelPointsContextResponse
 import com.example.twitchlite.data.remote.dto.DropsInventoryResponse
+import com.example.twitchlite.data.remote.dto.GqlCategoryStreamsRequest
+import com.example.twitchlite.data.remote.dto.GqlCategoryStreamsResponse
 import com.example.twitchlite.data.remote.dto.GqlFollowedGamesRequest
 import com.example.twitchlite.data.remote.dto.GqlFollowedGamesResponse
 import com.example.twitchlite.data.remote.dto.GqlGameLookupRequest
@@ -70,4 +72,14 @@ interface TwitchGqlApi {
         @Header("Authorization") oauthHeader: String? = null,
         @Body request: GqlGameLookupRequest
     ): GqlGameLookupResponse
+
+    @Headers(
+        "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Content-Type: application/json"
+    )
+    @POST("gql")
+    suspend fun queryCategoryStreams(
+        @Header("Authorization") oauthHeader: String? = null,
+        @Body request: GqlCategoryStreamsRequest
+    ): GqlCategoryStreamsResponse
 }

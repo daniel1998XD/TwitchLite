@@ -10,6 +10,8 @@ import androidx.paging.cachedIn
 import com.example.twitchlite.data.local.TokenManager
 import com.example.twitchlite.data.remote.api.TwitchGqlApi
 import com.example.twitchlite.data.remote.api.TwitchHelixApi
+import com.example.twitchlite.data.remote.dto.GqlCategoryStreamsRequest
+import com.example.twitchlite.data.remote.dto.GqlCategoryStreamsVariables
 import com.example.twitchlite.data.remote.dto.GqlFollowedGamesRequest
 import com.example.twitchlite.data.remote.dto.GqlFollowedGamesVariables
 import com.example.twitchlite.data.remote.dto.GqlGameLookupRequest
@@ -34,9 +36,23 @@ data class FollowedCategoryUiModel(
     val viewersCount: Int = 0
 )
 
+data class CategoryStreamUiModel(
+    val id: String,
+    val userLogin: String,
+    val userName: String,
+    val gameName: String,
+    val title: String,
+    val viewerCount: Int,
+    val thumbnailUrl: String
+)
+
 data class HomeUiState(
     val followedCategories: List<FollowedCategoryUiModel> = emptyList(),
-    val isLoadingCategories: Boolean = false
+    val isLoadingCategories: Boolean = false,
+    val selectedCategory: FollowedCategoryUiModel? = null,
+    val categoryStreams: List<CategoryStreamUiModel> = emptyList(),
+    val isLoadingCategoryStreams: Boolean = false,
+    val categoryStreamsError: String? = null
 )
 
 class HomeViewModel(
@@ -73,10 +89,6 @@ class HomeViewModel(
         loadFollowedCategories()
     }
 
-    /**
-     * Salva o Token OAuth e consulta `/helix/users` para descobrir automaticamente
-     * o `user_id` e `login` do usuário logado, recarregando a lista Paging 3 e as categorias.
-     */
     fun authenticateWithToken(accessToken: String, customClientId: String) {
         val cleanToken = accessToken
             .removePrefix("Bearer ")
@@ -134,7 +146,6 @@ class HomeViewModel(
                 )
             )
 
-            // 1ª Tentativa: Com OAuth (caso o token seja compatível com o GQL Client-ID)
             val authNodes = if (!token.isNullOrBlank()) {
                 runCatching {
                     val res = gqlApi.queryFollowedGames(
@@ -146,7 +157,6 @@ class HomeViewModel(
                 }.getOrNull()
             } else null
 
-            // 2ª Tentativa: Sem header de Auth (evita erro 401 quando o token é exclusivo da Helix)
             val finalNodes = if (!authNodes.isNullOrEmpty()) {
                 authNodes
             } else if (username.isNotBlank()) {
@@ -174,11 +184,6 @@ class HomeViewModel(
         }
     }
 
-    /**
-     * Fallback via GQL (oauthHeader = null): caso a Twitch restrinja `followedGames` para tokens
-     * de Client-ID terceiros da Helix, busca no GQL os dados e BoxArt das categorias presentes
-     * nos canais seguidos pelo usuário.
-     */
     fun syncCategoriesFromFollowedStreamsFallback(streams: List<HelixStreamDto>) {
         if (_uiState.value.followedCategories.isNotEmpty() || _uiState.value.isLoadingCategories) return
 
@@ -217,6 +222,91 @@ class HomeViewModel(
                     isLoadingCategories = false
                 )
             }
+        }
+    }
+
+    /**
+     * Abre a janela da categoria clicada e busca as lives ao vivo daquele jogo via GQL.
+     */
+    fun openCategoryStreams(category: FollowedCategoryUiModel) {
+        _uiState.update {
+            it.copy(
+                selectedCategory = category,
+                categoryStreams = emptyList(),
+                isLoadingCategoryStreams = true,
+                categoryStreamsError = null
+            )
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                val response = gqlApi.queryCategoryStreams(
+                    oauthHeader = null,
+                    request = GqlCategoryStreamsRequest(
+                        variables = GqlCategoryStreamsVariables(
+                            name = category.name,
+                            first = 40
+                        )
+                    )
+                )
+
+                val gameNode = response.data?.game
+                val updatedCategory = if (gameNode != null) {
+                    category.copy(
+                        id = gameNode.id ?: category.id,
+                        displayName = gameNode.displayName?.takeIf { it.isNotBlank() } ?: category.displayName,
+                        boxArtUrl = gameNode.boxArtUrl?.takeIf { it.isNotBlank() } ?: category.boxArtUrl,
+                        viewersCount = gameNode.viewersCount ?: category.viewersCount
+                    )
+                } else {
+                    category
+                }
+
+                val streams = gameNode?.streams?.edges
+                    .orEmpty()
+                    .mapNotNull { edge ->
+                        val node = edge.node ?: return@mapNotNull null
+                        val login = node.broadcaster?.login?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                        CategoryStreamUiModel(
+                            id = node.id ?: login,
+                            userLogin = login,
+                            userName = node.broadcaster.displayName?.takeIf { it.isNotBlank() } ?: login,
+                            gameName = node.game?.displayName ?: updatedCategory.displayName,
+                            title = node.title.orEmpty(),
+                            viewerCount = node.viewersCount ?: 0,
+                            thumbnailUrl = node.previewImageUrl.orEmpty()
+                        )
+                    }
+
+                Pair(updatedCategory, streams)
+            }.onSuccess { (updatedCategory, streams) ->
+                _uiState.update {
+                    it.copy(
+                        selectedCategory = updatedCategory,
+                        categoryStreams = streams,
+                        isLoadingCategoryStreams = false,
+                        categoryStreamsError = null
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(
+                        isLoadingCategoryStreams = false,
+                        categoryStreamsError = err.localizedMessage ?: "Erro ao carregar transmissões da categoria."
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeCategoryStreams() {
+        _uiState.update {
+            it.copy(
+                selectedCategory = null,
+                categoryStreams = emptyList(),
+                isLoadingCategoryStreams = false,
+                categoryStreamsError = null
+            )
         }
     }
 

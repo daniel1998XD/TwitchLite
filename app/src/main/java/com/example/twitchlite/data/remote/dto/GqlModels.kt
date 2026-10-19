@@ -237,3 +237,94 @@ data class GqlGameLookupResponse(
 data class GqlGameLookupData(
     @SerializedName("game") val game: GqlGameNode?
 )
+
+// ==================== MODELOS GQL PARA LIVES DE UMA CATEGORIA ====================
+
+data class GqlCategoryStreamsRequest(
+    @SerializedName("operationName") val operationName: String = "CategoryStreams_Query",
+    @SerializedName("query") val query: String = CATEGORY_STREAMS_QUERY,
+    @SerializedName("variables") val variables: GqlCategoryStreamsVariables
+) {
+    companion object {
+        const val CATEGORY_STREAMS_QUERY = """
+            query CategoryStreams_Query(${'$'}name: String!, ${'$'}first: Int!) {
+              game(name: ${'$'}name) {
+                id
+                name
+                displayName
+                boxArtURL(width: 285, height: 380)
+                viewersCount
+                streams(first: ${'$'}first) {
+                  edges {
+                    node {
+                      id
+                      title
+                      viewersCount
+                      previewImageURL(width: 440, height: 248)
+                      broadcaster {
+                        id
+                        login
+                        displayName
+                      }
+                      game {
+                        name
+                        displayName
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlCategoryStreamsVariables(
+    @SerializedName("name") val name: String,
+    @SerializedName("first") val first: Int = 40
+)
+
+data class GqlCategoryStreamsResponse(
+    @SerializedName("data") val data: GqlCategoryStreamsData?
+)
+
+data class GqlCategoryStreamsData(
+    @SerializedName("game") val game: GqlCategoryWithStreamsNode?
+)
+
+data class GqlCategoryWithStreamsNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("name") val name: String?,
+    @SerializedName("displayName") val displayName: String?,
+    @SerializedName("boxArtURL") val boxArtUrl: String?,
+    @SerializedName("viewersCount") val viewersCount: Int?,
+    @SerializedName("streams") val streams: GqlStreamConnection?
+)
+
+data class GqlStreamConnection(
+    @SerializedName("edges") val edges: List<GqlStreamEdge>?
+)
+
+data class GqlStreamEdge(
+    @SerializedName("node") val node: GqlStreamNode?
+)
+
+data class GqlStreamNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("title") val title: String?,
+    @SerializedName("viewersCount") val viewersCount: Int?,
+    @SerializedName("previewImageURL") val previewImageUrl: String?,
+    @SerializedName("broadcaster") val broadcaster: GqlBroadcasterNode?,
+    @SerializedName("game") val game: GqlSimpleGameNode?
+)
+
+data class GqlBroadcasterNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("login") val login: String?,
+    @SerializedName("displayName") val displayName: String?
+)
+
+data class GqlSimpleGameNode(
+    @SerializedName("name") val name: String?,
+    @SerializedName("displayName") val displayName: String?
+)
