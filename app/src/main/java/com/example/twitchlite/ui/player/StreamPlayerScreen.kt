@@ -7,7 +7,6 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -112,7 +111,6 @@ fun StreamPlayerScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
     val thirdPartyEmotes by viewModel.thirdPartyEmotes.collectAsStateWithLifecycle()
-    val autoClaimNotice by viewModel.lastAutoClaimNotification.collectAsStateWithLifecycle()
 
     // Estados de VODs (Filtro de tempo + Lista + Paginação)
     val selectedVodFilter by viewModel.selectedVodFilter.collectAsStateWithLifecycle()
@@ -149,14 +147,6 @@ fun StreamPlayerScreen(
         if (readyState != null && !readyState.isChannelCurrentlyLive && !hasAutoSwitchedForOffline) {
             selectedTab = ChannelContentTab.VODS
             hasAutoSwitchedForOffline = true
-        }
-    }
-
-    LaunchedEffect(autoClaimNotice) {
-        val notice = autoClaimNotice
-        if (!notice.isNullOrBlank()) {
-            Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
-            viewModel.consumeAutoClaimNotification()
         }
     }
 

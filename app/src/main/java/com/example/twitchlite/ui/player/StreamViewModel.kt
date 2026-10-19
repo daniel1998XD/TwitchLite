@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.twitchlite.data.local.TokenManager
-import com.example.twitchlite.data.remote.AutoClaimRepository
 import com.example.twitchlite.data.remote.EmoteRepository
 import com.example.twitchlite.data.remote.StreamExtractorRepository
 import com.example.twitchlite.data.remote.api.TwitchGqlApi
@@ -17,13 +16,10 @@ import com.example.twitchlite.data.remote.irc.TwitchIrcClient
 import com.example.twitchlite.di.AppContainer
 import com.example.twitchlite.domain.model.BufferConfig
 import com.example.twitchlite.domain.model.ChatMessage
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -92,7 +88,6 @@ sealed interface StreamUiState {
 class StreamViewModel(
     private val extractorRepository: StreamExtractorRepository,
     private val emoteRepository: EmoteRepository,
-    private val autoClaimRepository: AutoClaimRepository,
     private val ircClient: TwitchIrcClient,
     private val tokenManager: TokenManager,
     private val helixApi: TwitchHelixApi,
@@ -104,9 +99,6 @@ class StreamViewModel(
 
     val chatMessages: StateFlow<List<ChatMessage>> = ircClient.messages
     val thirdPartyEmotes: StateFlow<Map<String, String>> = emoteRepository.activeEmotes
-
-    private val _lastAutoClaimNotification = MutableStateFlow<String?>(null)
-    val lastAutoClaimNotification: StateFlow<String?> = _lastAutoClaimNotification.asStateFlow()
 
     // ==================== ESTADOS DE VODS (PAGINAÇÃO + FILTRO DE DATA) ====================
     private val _selectedVodFilter = MutableStateFlow(MediaTimeFilter.ALL)
@@ -143,7 +135,6 @@ class StreamViewModel(
     private val _isLoadingVodPlayback = MutableStateFlow(false)
     val isLoadingVodPlayback: StateFlow<Boolean> = _isLoadingVodPlayback.asStateFlow()
 
-    private var autoClaimJob: Job? = null
     private var currentLoadedChannel: String? = null
     private var cachedHelixUserId: String? = null
 
@@ -218,9 +209,6 @@ class StreamViewModel(
             oauthToken = tokenManager.getAccessToken(),
             username = tokenManager.getUsername()
         )
-
-        // 5. Inicia o loop de Auto-Claim
-        startAutoClaimLoop(cleanChannel)
     }
 
     fun onVodFilterSelected(filter: MediaTimeFilter) {
@@ -312,7 +300,6 @@ class StreamViewModel(
                             )
                         }
 
-                        // Filtra pela data de corte (especialmente útil para "Neste ano")
                         val filteredList = if (cutoffMillis != null) {
                             rawList.filter { isIsoDateAfterOrEqual(it.createdAtIso, cutoffMillis) }
                         } else {
@@ -320,7 +307,6 @@ class StreamViewModel(
                         }
 
                         val nextCursor = response.pagination?.cursor
-                        // Se a página trouxe itens que já ficaram mais antigos que o corte, encerra a paginação
                         val reachedTimeLimit = cutoffMillis != null && filteredList.size < rawList.size
 
                         Triple(filteredList, nextCursor, !nextCursor.isNullOrBlank() && !reachedTimeLimit && rawList.isNotEmpty())
@@ -335,7 +321,6 @@ class StreamViewModel(
                 }
             }
 
-            // Fallback via GQL (oauthHeader = null) com suporte a cursor e filtro de tempo
             if (!handledByHelix) {
                 runCatching {
                     val response = gqlApi.queryChannelVideosAndClips(
@@ -449,7 +434,6 @@ class StreamViewModel(
                         Triple(mappedClips, nextCursor, !nextCursor.isNullOrBlank() && mappedClips.isNotEmpty())
                     }.onSuccess { (newClips, nextCursor, hasMore) ->
                         clipsNextCursor = nextCursor
-                        // Mantém sempre ordenado por mais visualizações
                         _channelClips.value = (_channelClips.value + newClips)
                             .distinctBy { it.id }
                             .sortedByDescending { it.viewCount }
@@ -459,7 +443,6 @@ class StreamViewModel(
                 }
             }
 
-            // Fallback via GQL (oauthHeader = null) com suporte a cursor e filtro de tempo
             if (!handledByHelix) {
                 runCatching {
                     val response = gqlApi.queryChannelVideosAndClips(
@@ -559,9 +542,7 @@ class StreamViewModel(
                     activeMediaTitle = "VOD: ${vod.title}"
                 )
                 _isLoadingVodPlayback.value = false
-            }.onFailure { err ->
-                _lastAutoClaimNotification.value =
-                    "Não foi possível abrir o VOD: ${err.localizedMessage ?: "Restrito para inscritos"}"
+            }.onFailure {
                 _isLoadingVodPlayback.value = false
             }
         }
@@ -595,9 +576,7 @@ class StreamViewModel(
                     activeMediaTitle = "Clip: ${clip.title}"
                 )
                 _isLoadingVodPlayback.value = false
-            }.onFailure { err ->
-                _lastAutoClaimNotification.value =
-                    "Erro ao reproduzir Clip: ${err.localizedMessage}"
+            }.onFailure {
                 _isLoadingVodPlayback.value = false
             }
         }
@@ -613,37 +592,17 @@ class StreamViewModel(
         )
     }
 
-    private fun startAutoClaimLoop(channelLogin: String) {
-        autoClaimJob?.cancel()
-        autoClaimJob = viewModelScope.launch {
-            delay(15_000L)
-            while (isActive) {
-                val claimResult = autoClaimRepository.checkAndClaimAll(channelLogin)
-                if (!claimResult.isNullOrBlank()) {
-                    _lastAutoClaimNotification.value = claimResult
-                }
-                delay(60_000L)
-            }
-        }
-    }
-
-    fun consumeAutoClaimNotification() {
-        _lastAutoClaimNotification.value = null
-    }
-
     fun sendChatMessage(message: String) {
         ircClient.sendMessage(message)
     }
 
     fun stopStream() {
-        autoClaimJob?.cancel()
         ircClient.disconnect()
         currentLoadedChannel = null
     }
 
     override fun onCleared() {
         super.onCleared()
-        autoClaimJob?.cancel()
         ircClient.disconnect()
     }
 
@@ -736,7 +695,6 @@ class StreamViewModel(
                     return StreamViewModel(
                         extractorRepository = container.streamExtractorRepository,
                         emoteRepository = container.emoteRepository,
-                        autoClaimRepository = container.autoClaimRepository,
                         ircClient = container.ircClient,
                         tokenManager = container.tokenManager,
                         helixApi = container.helixApi,

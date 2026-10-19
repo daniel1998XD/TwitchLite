@@ -2,7 +2,6 @@ package com.example.twitchlite.di
 
 import android.content.Context
 import com.example.twitchlite.data.local.TokenManager
-import com.example.twitchlite.data.remote.AutoClaimRepository
 import com.example.twitchlite.data.remote.EmoteRepository
 import com.example.twitchlite.data.remote.StreamExtractorRepository
 import com.example.twitchlite.data.remote.api.ThirdPartyEmoteApi
@@ -87,11 +86,6 @@ class AppContainer(context: Context) {
     )
 
     val emoteRepository = EmoteRepository(api = thirdPartyEmoteApi)
-
-    val autoClaimRepository = AutoClaimRepository(
-        gqlApi = gqlApi,
-        tokenManager = tokenManager
-    )
 
     val ircClient = TwitchIrcClient(okHttpClient = okHttpClient)
 }
