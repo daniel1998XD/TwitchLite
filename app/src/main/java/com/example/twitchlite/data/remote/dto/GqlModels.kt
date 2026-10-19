@@ -328,3 +328,143 @@ data class GqlSimpleGameNode(
     @SerializedName("name") val name: String?,
     @SerializedName("displayName") val displayName: String?
 )
+
+// ==================== MODELOS GQL PARA BUSCA GLOBAL (AUTOCOMPLETE E TELA DE BUSCA) ====================
+
+data class GqlSearchUsersRequest(
+    @SerializedName("operationName") val operationName: String = "SearchUsers_Query",
+    @SerializedName("query") val query: String = SEARCH_USERS_QUERY,
+    @SerializedName("variables") val variables: GqlSearchUsersVariables
+) {
+    companion object {
+        const val SEARCH_USERS_QUERY = """
+            query SearchUsers_Query(${'$'}userQuery: String!, ${'$'}first: Int!) {
+              searchUsers(userQuery: ${'$'}userQuery, first: ${'$'}first) {
+                edges {
+                  node {
+                    id
+                    login
+                    displayName
+                    profileImageURL(width: 70)
+                    roles {
+                      isPartner
+                    }
+                    broadcastSettings {
+                      title
+                      game {
+                        id
+                        name
+                        displayName
+                      }
+                    }
+                    stream {
+                      id
+                      title
+                      viewersCount
+                      previewImageURL(width: 440, height: 248)
+                      game {
+                        id
+                        name
+                        displayName
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlSearchUsersVariables(
+    @SerializedName("userQuery") val userQuery: String,
+    @SerializedName("first") val first: Int = 15
+)
+
+data class GqlSearchUsersResponse(
+    @SerializedName("data") val data: GqlSearchUsersData?
+)
+
+data class GqlSearchUsersData(
+    @SerializedName("searchUsers") val searchUsers: GqlSearchUsersConnection?
+)
+
+data class GqlSearchUsersConnection(
+    @SerializedName("edges") val edges: List<GqlSearchUserEdge>?
+)
+
+data class GqlSearchUserEdge(
+    @SerializedName("node") val node: GqlSearchUserNode?
+)
+
+data class GqlSearchUserNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("login") val login: String?,
+    @SerializedName("displayName") val displayName: String?,
+    @SerializedName("profileImageURL") val profileImageUrl: String?,
+    @SerializedName("roles") val roles: GqlUserRoles?,
+    @SerializedName("broadcastSettings") val broadcastSettings: GqlBroadcastSettings?,
+    @SerializedName("stream") val stream: GqlSearchUserStream?
+)
+
+data class GqlUserRoles(
+    @SerializedName("isPartner") val isPartner: Boolean?
+)
+
+data class GqlBroadcastSettings(
+    @SerializedName("title") val title: String?,
+    @SerializedName("game") val game: GqlSimpleGameNode?
+)
+
+data class GqlSearchUserStream(
+    @SerializedName("id") val id: String?,
+    @SerializedName("title") val title: String?,
+    @SerializedName("viewersCount") val viewersCount: Int?,
+    @SerializedName("previewImageURL") val previewImageUrl: String?,
+    @SerializedName("game") val game: GqlSimpleGameNode?
+)
+
+data class GqlSearchCategoriesRequest(
+    @SerializedName("operationName") val operationName: String = "SearchCategories_Query",
+    @SerializedName("query") val query: String = SEARCH_CATEGORIES_QUERY,
+    @SerializedName("variables") val variables: GqlSearchCategoriesVariables
+) {
+    companion object {
+        const val SEARCH_CATEGORIES_QUERY = """
+            query SearchCategories_Query(${'$'}query: String!, ${'$'}first: Int!) {
+              searchCategories(query: ${'$'}query, first: ${'$'}first) {
+                edges {
+                  node {
+                    id
+                    name
+                    displayName
+                    boxArtURL(width: 285, height: 380)
+                    viewersCount
+                  }
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlSearchCategoriesVariables(
+    @SerializedName("query") val query: String,
+    @SerializedName("first") val first: Int = 10
+)
+
+data class GqlSearchCategoriesResponse(
+    @SerializedName("data") val data: GqlSearchCategoriesData?
+)
+
+data class GqlSearchCategoriesData(
+    @SerializedName("searchCategories") val searchCategories: GqlSearchCategoriesConnection?
+)
+
+data class GqlSearchCategoriesConnection(
+    @SerializedName("edges") val edges: List<GqlSearchCategoryEdge>?
+)
+
+data class GqlSearchCategoryEdge(
+    @SerializedName("node") val node: GqlGameNode?
+)

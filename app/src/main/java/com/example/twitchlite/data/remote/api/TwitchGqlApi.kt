@@ -11,6 +11,10 @@ import com.example.twitchlite.data.remote.dto.GqlGameLookupResponse
 import com.example.twitchlite.data.remote.dto.GqlGenericRequest
 import com.example.twitchlite.data.remote.dto.GqlPlaybackTokenRequest
 import com.example.twitchlite.data.remote.dto.GqlPlaybackTokenResponse
+import com.example.twitchlite.data.remote.dto.GqlSearchCategoriesRequest
+import com.example.twitchlite.data.remote.dto.GqlSearchCategoriesResponse
+import com.example.twitchlite.data.remote.dto.GqlSearchUsersRequest
+import com.example.twitchlite.data.remote.dto.GqlSearchUsersResponse
 import retrofit2.http.Body
 import retrofit2.http.Header
 import retrofit2.http.Headers
@@ -82,4 +86,24 @@ interface TwitchGqlApi {
         @Header("Authorization") oauthHeader: String? = null,
         @Body request: GqlCategoryStreamsRequest
     ): GqlCategoryStreamsResponse
+
+    @Headers(
+        "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Content-Type: application/json"
+    )
+    @POST("gql")
+    suspend fun querySearchUsers(
+        @Header("Authorization") oauthHeader: String? = null,
+        @Body request: GqlSearchUsersRequest
+    ): GqlSearchUsersResponse
+
+    @Headers(
+        "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Content-Type: application/json"
+    )
+    @POST("gql")
+    suspend fun querySearchCategories(
+        @Header("Authorization") oauthHeader: String? = null,
+        @Body request: GqlSearchCategoriesRequest
+    ): GqlSearchCategoriesResponse
 }
