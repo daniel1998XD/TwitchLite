@@ -18,18 +18,24 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.*
@@ -43,6 +49,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -63,6 +70,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.example.twitchlite.MainActivity
 import com.example.twitchlite.domain.model.BufferConfig
@@ -1325,6 +1333,7 @@ private fun UnifiedPlayerSettingsSheetContent(
     }
 }
 
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveChatSection(
     channelName: String,
@@ -1334,6 +1343,7 @@ fun LiveChatSection(
     modifier: Modifier = Modifier
 ) {
     var inputText by remember { mutableStateOf("") }
+    var showEmotePickerSheet by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val animatedImageLoader = rememberAnimatedEmoteImageLoader()
 
@@ -1364,7 +1374,8 @@ fun LiveChatSection(
                 Text(
                     text = "7TV/BTTV/FFZ (${thirdPartyEmotes.size})",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF9146FF)
+                    color = Color(0xFF9146FF),
+                    modifier = Modifier.clickable { showEmotePickerSheet = true }
                 )
             }
         }
@@ -1393,6 +1404,17 @@ fun LiveChatSection(
                 .padding(top = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 1. Botão de 'Sorriso' (Emote Picker) ao lado do campo de texto
+            IconButton(
+                onClick = { showEmotePickerSheet = true }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.EmojiEmotions,
+                    contentDescription = "Abrir teclado de emotes",
+                    tint = if (thirdPartyEmotes.isNotEmpty()) Color(0xFFA970FF) else Color.Gray
+                )
+            }
+
             OutlinedTextField(
                 value = inputText,
                 onValueChange = { inputText = it },
@@ -1400,14 +1422,227 @@ fun LiveChatSection(
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
+
             Spacer(modifier = Modifier.width(8.dp))
+
             Button(
                 onClick = {
-                    onSendMessage(inputText)
-                    inputText = ""
+                    if (inputText.isNotBlank()) {
+                        onSendMessage(inputText)
+                        inputText = ""
+                    }
                 }
             ) {
                 Text("Enviar")
+            }
+        }
+    }
+
+    // 2. ModalBottomSheet com LazyVerticalGrid de todos os Emotes disponíveis
+    if (showEmotePickerSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showEmotePickerSheet = false },
+            containerColor = Color(0xFF18181B),
+            contentColor = Color.White
+        ) {
+            EmotePickerBottomSheetContent(
+                thirdPartyEmotes = thirdPartyEmotes,
+                imageLoader = animatedImageLoader,
+                currentInputText = inputText,
+                onEmoteSelected = { emoteCode ->
+                    // 3. Adiciona o nome do emote (chave do Map) ao texto atual, seguido de um espaço
+                    val prefix = if (inputText.isNotEmpty() && !inputText.endsWith(" ")) {
+                        "$inputText "
+                    } else {
+                        inputText
+                    }
+                    inputText = "$prefix$emoteCode "
+                },
+                onSendFromSheet = {
+                    if (inputText.isNotBlank()) {
+                        onSendMessage(inputText)
+                        inputText = ""
+                        showEmotePickerSheet = false
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmotePickerBottomSheetContent(
+    thirdPartyEmotes: Map<String, String>,
+    imageLoader: ImageLoader,
+    currentInputText: String,
+    onEmoteSelected: (emoteCode: String) -> Unit,
+    onSendFromSheet: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredEmotes = remember(thirdPartyEmotes, searchQuery) {
+        val query = searchQuery.trim()
+        val entries = thirdPartyEmotes.entries.toList()
+        if (query.isBlank()) {
+            entries.sortedBy { it.key.lowercase() }
+        } else {
+            entries
+                .filter { it.key.contains(query, ignoreCase = true) }
+                .sortedBy { it.key.lowercase() }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 320.dp, max = 480.dp)
+            .padding(horizontal = 12.dp)
+            .padding(bottom = 16.dp)
+    ) {
+        // Cabeçalho + Contador de Emotes
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Teclado de Emotes (${filteredEmotes.size})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Text(
+                text = "Toque para inserir",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.LightGray
+            )
+        }
+
+        // Barra de busca rápida de emotes dentro do BottomSheet
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Filtrar emote (ex: KEKW, catJAM)...") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Buscar emote"
+                )
+            },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Limpar filtro"
+                        )
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 10.dp)
+        )
+
+        // Preview da mensagem sendo montada (permite clicar em vários emotes seguidos e já enviar!)
+        if (currentInputText.isNotBlank()) {
+            Surface(
+                color = Color(0xFF26262C),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = currentInputText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onSendFromSheet,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Text("Enviar", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
+        if (filteredEmotes.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (thirdPartyEmotes.isEmpty()) {
+                        "Carregando emotes do canal..."
+                    } else {
+                        "Nenhum emote encontrado para \"$searchQuery\"."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+            }
+        } else {
+            // Grade vertical de Emotes (LazyVerticalGrid)
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 76.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(
+                    items = filteredEmotes,
+                    key = { it.key }
+                ) { (emoteCode, emoteUrl) ->
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF232329))
+                            .clickable { onEmoteSelected(emoteCode) }
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        AsyncImage(
+                            model = emoteUrl,
+                            imageLoader = imageLoader,
+                            contentDescription = emoteCode,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(38.dp)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = emoteCode,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.LightGray,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
         }
     }
