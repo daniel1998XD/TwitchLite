@@ -328,10 +328,11 @@ class HomeViewModel(
                     }.getOrDefault(emptyList())
 
                     // Combina canais ao vivo encontrados por nome + lives da categoria + canais relevantes
+                    // Agora: prioriza canais pesquisados pelo nome (ao vivo e offline) + lives da categoria
                     val liveUsers = matchedUsers.filter { it.isLive }
-                    val offlineUsers = matchedUsers.filter { !it.isLive }.take(4)
+                    val offlineUsers = matchedUsers.filter { !it.isLive }
 
-                    val combinedChannels = (liveUsers + categoryStreams + offlineUsers)
+                    val combinedChannels = (liveUsers + offlineUsers.take(6) + categoryStreams + offlineUsers.drop(6))
                         .distinctBy { it.login.lowercase() }
 
                     Pair(combinedChannels, matchedCategories)

@@ -1,6 +1,5 @@
 package com.example.twitchlite.ui.player
 
-import kotlinx.coroutines.delay
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -25,17 +24,26 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.PictureInPictureModeChangedInfo
@@ -50,15 +58,24 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
 import com.example.twitchlite.MainActivity
 import com.example.twitchlite.domain.model.BufferConfig
 import com.example.twitchlite.domain.model.ChatMessage
 import com.example.twitchlite.domain.model.VideoQualityOption
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+
+private enum class ChannelContentTab(val title: String) {
+    CHAT("Chat Ao Vivo"),
+    VODS("VODs"),
+    CLIPS("Clips")
+}
 
 @Composable
 fun rememberIsInPipMode(): Boolean {
@@ -96,6 +113,11 @@ fun StreamPlayerScreen(
     val thirdPartyEmotes by viewModel.thirdPartyEmotes.collectAsStateWithLifecycle()
     val autoClaimNotice by viewModel.lastAutoClaimNotification.collectAsStateWithLifecycle()
 
+    val channelVods by viewModel.channelVods.collectAsStateWithLifecycle()
+    val channelClips by viewModel.channelClips.collectAsStateWithLifecycle()
+    val isLoadingMediaLists by viewModel.isLoadingMediaLists.collectAsStateWithLifecycle()
+    val isLoadingVodPlayback by viewModel.isLoadingVodPlayback.collectAsStateWithLifecycle()
+
     var availableQualities by remember { mutableStateOf<List<VideoQualityOption>>(emptyList()) }
     var selectedQuality by remember { mutableStateOf<VideoQualityOption?>(null) }
     var isAudioOnly by remember { mutableStateOf(false) }
@@ -103,8 +125,21 @@ fun StreamPlayerScreen(
     var showSettingsSheet by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
 
+    // Aba selecionada entre o Player e o Chat (Chat Ao Vivo | VODs | Clips)
+    var selectedTab by rememberSaveable(channelLogin) { mutableStateOf(ChannelContentTab.CHAT) }
+    var hasAutoSwitchedForOffline by rememberSaveable(channelLogin) { mutableStateOf(false) }
+
     LaunchedEffect(channelLogin) {
         viewModel.loadStream(channelLogin)
+    }
+
+    // Se o canal estiver Offline ao abrir, muda automaticamente para a aba de VODs
+    LaunchedEffect(uiState) {
+        val readyState = uiState as? StreamUiState.Ready
+        if (readyState != null && !readyState.isChannelCurrentlyLive && !hasAutoSwitchedForOffline) {
+            selectedTab = ChannelContentTab.VODS
+            hasAutoSwitchedForOffline = true
+        }
     }
 
     LaunchedEffect(autoClaimNotice) {
@@ -115,9 +150,6 @@ fun StreamPlayerScreen(
         }
     }
 
-    // TOGGLE DE TELA CHEIA CORRIGIDO:
-    // Consulta a orientação real diretamente na Activity no momento do clique,
-    // evitando que o movableContentOf retenha um valor booleano antigo.
     val toggleFullscreen: () -> Unit = {
         val activity = context.findActivity()
         if (activity != null) {
@@ -131,7 +163,6 @@ fun StreamPlayerScreen(
         }
     }
 
-    // Botão Voltar do Android: se estiver em Paisagem, volta para Retrato; se já estiver em Retrato, sai da live
     BackHandler {
         val activity = context.findActivity()
         val currentlyLandscape =
@@ -147,7 +178,8 @@ fun StreamPlayerScreen(
 
     LaunchedEffect(uiState) {
         val mainActivity = context.findActivity() as? MainActivity
-        mainActivity?.setPipEligible(uiState is StreamUiState.Ready)
+        val ready = uiState as? StreamUiState.Ready
+        mainActivity?.setPipEligible(ready != null && !ready.hlsUrl.isNullOrBlank())
     }
 
     DisposableEffect(Unit) {
@@ -205,6 +237,13 @@ fun StreamPlayerScreen(
         }
 
         is StreamUiState.Ready -> {
+            // Reseta os seletores de qualidade ao trocar de mídia (ex: de Live para VOD)
+            LaunchedEffect(state.hlsUrl) {
+                selectedQuality = null
+                isAudioOnly = false
+                availableQualities = emptyList()
+            }
+
             val shortQualityBadge = remember(selectedQuality, isAudioOnly) {
                 when {
                     isAudioOnly -> "Áudio"
@@ -213,24 +252,54 @@ fun StreamPlayerScreen(
                 }
             }
 
-            val videoSurfaceContent = remember(state.hlsUrl, state.bufferConfig) {
+            val isSeekableMedia = state.contentType == PlaybackContentType.VOD ||
+                    state.contentType == PlaybackContentType.CLIP
+
+            val videoSurfaceContent = remember(state.hlsUrl, state.bufferConfig, isSeekableMedia) {
                 movableContentOf<Modifier, Boolean, Boolean> { playerModifier, inPip, landscapeMode ->
-                    CustomExoPlayerWithTrackSelector(
-                        hlsUrl = state.hlsUrl,
-                        bufferConfig = state.bufferConfig,
-                        isInPipMode = inPip,
-                        isLandscape = landscapeMode,
-                        selectedQualityBadge = shortQualityBadge,
-                        onQualitiesExtracted = { qualities -> availableQualities = qualities },
-                        onPlayerReady = { player -> activePlayer = player },
-                        onOpenSettingsSheet = { showSettingsSheet = true },
-                        onToggleFullscreen = toggleFullscreen,
-                        modifier = playerModifier
-                    )
+                    if (!state.hlsUrl.isNullOrBlank()) {
+                        Box(modifier = playerModifier) {
+                            CustomExoPlayerWithTrackSelector(
+                                mediaUrl = state.hlsUrl,
+                                bufferConfig = state.bufferConfig,
+                                isSeekableVodOrClip = isSeekableMedia,
+                                isInPipMode = inPip,
+                                isLandscape = landscapeMode,
+                                selectedQualityBadge = shortQualityBadge,
+                                onQualitiesExtracted = { qualities -> availableQualities = qualities },
+                                onPlayerReady = { player ->
+                                    activePlayer = player
+                                    player.setPlaybackSpeed(playbackSpeed)
+                                },
+                                onOpenSettingsSheet = { showSettingsSheet = true },
+                                onToggleFullscreen = toggleFullscreen,
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            if (isLoadingVodPlayback) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color(0x88000000)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(color = Color.White)
+                                }
+                            }
+                        }
+                    } else {
+                        // Banner 16:9 exibido quando o canal está Offline e nenhum VOD/Clip foi escolhido ainda
+                        OfflineChannelHeaderBanner(
+                            channelLogin = state.channelLogin,
+                            isLoadingPlayback = isLoadingVodPlayback,
+                            onBack = onBack,
+                            modifier = playerModifier
+                        )
+                    }
                 }
             }
 
-            if (isInPipMode || isLandscape) {
+            if ((isInPipMode || isLandscape) && !state.hlsUrl.isNullOrBlank()) {
                 videoSurfaceContent(
                     Modifier
                         .fillMaxSize()
@@ -240,6 +309,7 @@ fun StreamPlayerScreen(
                 )
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
+                    // 1. Área Superior 16:9 (Player de Live/VOD/Clip ou Banner de Canal Offline)
                     videoSurfaceContent(
                         Modifier
                             .fillMaxWidth()
@@ -249,15 +319,119 @@ fun StreamPlayerScreen(
                         false
                     )
 
-                    LiveChatSection(
-                        channelName = state.channelLogin,
-                        messages = messages,
-                        thirdPartyEmotes = thirdPartyEmotes,
-                        onSendMessage = viewModel::sendChatMessage,
+                    // Faixa informativa quando estiver reproduzindo um VOD ou Clip
+                    if (state.contentType == PlaybackContentType.VOD ||
+                        state.contentType == PlaybackContentType.CLIP
+                    ) {
+                        Surface(
+                            color = Color(0xFF1F1F23),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = state.activeMediaTitle.orEmpty(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (state.isChannelCurrentlyLive) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    TextButton(
+                                        onClick = { viewModel.returnToLiveStream() },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.LiveTv,
+                                            contentDescription = null,
+                                            tint = Color(0xFFFF4F4D),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Voltar à Live",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFFFF4F4D),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. MENU DE ABAS ENTRE O VÍDEO E O CHAT (Chat Ao Vivo | VODs | Clips)
+                    TabRow(
+                        selectedTabIndex = selectedTab.ordinal,
+                        containerColor = Color(0xFF18181B),
+                        contentColor = Color.White
+                    ) {
+                        ChannelContentTab.entries.forEach { tab ->
+                            val badgeSuffix = when (tab) {
+                                ChannelContentTab.CHAT -> ""
+                                ChannelContentTab.VODS -> if (channelVods.isNotEmpty()) " (${channelVods.size})" else ""
+                                ChannelContentTab.CLIPS -> if (channelClips.isNotEmpty()) " (${channelClips.size})" else ""
+                            }
+                            Tab(
+                                selected = selectedTab == tab,
+                                onClick = { selectedTab = tab },
+                                text = {
+                                    Text(
+                                        text = "${tab.title}$badgeSuffix",
+                                        fontWeight = if (selectedTab == tab) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    // 3. Área Inferior Dinâmica conforme a Aba Selecionada
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                    )
+                            .background(Color(0xFF0E0E10))
+                    ) {
+                        when (selectedTab) {
+                            ChannelContentTab.CHAT -> {
+                                LiveChatSection(
+                                    channelName = state.channelLogin,
+                                    messages = messages,
+                                    thirdPartyEmotes = thirdPartyEmotes,
+                                    onSendMessage = viewModel::sendChatMessage,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+
+                            ChannelContentTab.VODS -> {
+                                ChannelVodsTabContent(
+                                    vods = channelVods,
+                                    isLoading = isLoadingMediaLists,
+                                    onVodClick = { vod -> viewModel.playVod(vod) },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+
+                            ChannelContentTab.CLIPS -> {
+                                ChannelClipsTabContent(
+                                    clips = channelClips,
+                                    isLoading = isLoadingMediaLists,
+                                    onClipClick = { clip -> viewModel.playClip(clip) },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -300,11 +474,333 @@ fun StreamPlayerScreen(
     }
 }
 
+@Composable
+private fun OfflineChannelHeaderBanner(
+    channelLogin: String,
+    isLoadingPlayback: Boolean,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .background(Color(0xFF18181B))
+            .padding(16.dp)
+    ) {
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier.align(Alignment.TopStart)
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowBack,
+                contentDescription = "Voltar",
+                tint = Color.White
+            )
+        }
+
+        if (isLoadingPlayback) {
+            CircularProgressIndicator(
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        } else {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VideocamOff,
+                    contentDescription = null,
+                    tint = Color(0xFFA970FF),
+                    modifier = Modifier.size(40.dp)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "@$channelLogin está offline",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Escolha um VOD ou Clip nas abas abaixo para assistir sem anúncios",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.LightGray
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelVodsTabContent(
+    vods: List<ChannelVodUiModel>,
+    isLoading: Boolean,
+    onVodClick: (ChannelVodUiModel) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    when {
+        isLoading && vods.isEmpty() -> {
+            Box(modifier = modifier, contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        }
+
+        vods.isEmpty() -> {
+            Box(
+                modifier = modifier.padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Nenhum VOD (gravação) disponível neste canal.",
+                    color = Color.LightGray,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        else -> {
+            LazyColumn(
+                modifier = modifier,
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(
+                    items = vods,
+                    key = { "vod_${it.id}" }
+                ) { vod ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF18181B))
+                            .clickable { onVodClick(vod) }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box {
+                            AsyncImage(
+                                model = vod.thumbnailUrl,
+                                contentDescription = vod.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(148.dp)
+                                    .aspectRatio(16f / 9f)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.DarkGray)
+                            )
+                            if (vod.durationFormatted.isNotBlank()) {
+                                Text(
+                                    text = vod.durationFormatted,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(4.dp)
+                                        .background(Color(0xDD000000), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                            Surface(
+                                color = Color(0xAA000000),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = Color(0xFFA970FF),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "VOD",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = vod.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "${vod.viewCount} visualizações",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFA970FF)
+                            )
+                            if (vod.createdAtFormatted.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Publicado em ${vod.createdAtFormatted}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.LightGray
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelClipsTabContent(
+    clips: List<ChannelClipUiModel>,
+    isLoading: Boolean,
+    onClipClick: (ChannelClipUiModel) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    when {
+        isLoading && clips.isEmpty() -> {
+            Box(modifier = modifier, contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        }
+
+        clips.isEmpty() -> {
+            Box(
+                modifier = modifier.padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Nenhum Clip encontrado para este canal.",
+                    color = Color.LightGray,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        else -> {
+            LazyColumn(
+                modifier = modifier,
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(
+                    items = clips,
+                    key = { "clip_${it.id}" }
+                ) { clip ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF18181B))
+                            .clickable { onClipClick(clip) }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box {
+                            AsyncImage(
+                                model = clip.thumbnailUrl,
+                                contentDescription = clip.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(148.dp)
+                                    .aspectRatio(16f / 9f)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.DarkGray)
+                            )
+                            if (clip.durationFormatted.isNotBlank()) {
+                                Text(
+                                    text = clip.durationFormatted,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(4.dp)
+                                        .background(Color(0xDD000000), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                            Surface(
+                                color = Color(0xAA000000),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Movie,
+                                        contentDescription = null,
+                                        tint = Color(0xFFA970FF),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "CLIP",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = clip.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "${clip.viewCount} visualizações • Clipado por ${clip.creatorName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFA970FF),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (clip.createdAtFormatted.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = clip.createdAtFormatted,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.LightGray
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 fun CustomExoPlayerWithTrackSelector(
-    hlsUrl: String,
+    mediaUrl: String,
     bufferConfig: BufferConfig,
+    isSeekableVodOrClip: Boolean,
     isInPipMode: Boolean,
     isLandscape: Boolean,
     selectedQualityBadge: String,
@@ -319,7 +815,7 @@ fun CustomExoPlayerWithTrackSelector(
     var isVideoPlaying by remember { mutableStateOf(false) }
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
 
-    val exoPlayer = remember(hlsUrl, bufferConfig) {
+    val exoPlayer = remember(mediaUrl, bufferConfig) {
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(buildUponParameters().setForceHighestSupportedBitrate(false))
         }
@@ -339,29 +835,38 @@ fun CustomExoPlayerWithTrackSelector(
             .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .setAllowCrossProtocolRedirects(true)
 
-        val mediaItem = MediaItem.Builder()
-            .setUri(hlsUrl)
-            .setMimeType(MimeTypes.APPLICATION_M3U8)
-            .build()
+        val isHlsStream = mediaUrl.contains(".m3u8", ignoreCase = true)
 
-        val hlsMediaSource = HlsMediaSource.Factory(httpDataSourceFactory)
-            .setAllowChunklessPreparation(true)
-            .createMediaSource(mediaItem)
+        val mediaSource = if (isHlsStream) {
+            val mediaItem = MediaItem.Builder()
+                .setUri(mediaUrl)
+                .setMimeType(MimeTypes.APPLICATION_M3U8)
+                .build()
+            HlsMediaSource.Factory(httpDataSourceFactory)
+                .setAllowChunklessPreparation(true)
+                .createMediaSource(mediaItem)
+        } else {
+            val mediaItem = MediaItem.Builder()
+                .setUri(mediaUrl)
+                .setMimeType(MimeTypes.APPLICATION_MP4)
+                .build()
+            ProgressiveMediaSource.Factory(httpDataSourceFactory)
+                .createMediaSource(mediaItem)
+        }
 
         ExoPlayer.Builder(context)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
+            .setSeekBackIncrementMs(10_000L)
+            .setSeekForwardIncrementMs(10_000L)
             .build()
             .apply {
-                setMediaSource(hlsMediaSource)
+                setMediaSource(mediaSource)
                 playWhenReady = true
                 prepare()
             }
     }
 
-    // Auto-hide garantido no Compose + sincronizado com o PlayerView:
-    // Assim que os controles estiverem visíveis e a live estiver rodando (isPlaying),
-    // conta 3 segundos e esconde tanto a barra nativa do Media3 quanto o overlay Compose.
     LaunchedEffect(areControlsVisible, isVideoPlaying, isInPipMode) {
         if (areControlsVisible && isVideoPlaying && !isInPipMode) {
             delay(3000L)
@@ -406,9 +911,16 @@ fun CustomExoPlayerWithTrackSelector(
                     controllerAutoShow = true
                     controllerHideOnTouch = true
                     controllerShowTimeoutMs = 3000
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
 
-                    // REMOVE a engrenagem nativa (exo_settings) e o botão fullscreen nativo (exo_fullscreen)
-                    // da árvore interna do PlayerView para que exista APENAS a nossa barra no canto inferior direito.
+                    // Em VODs e Clips, habilita os botões de avançar/retroceder 10s além da Timebar (Seekbar)
+                    setShowRewindButton(isSeekableVodOrClip)
+                    setShowFastForwardButton(isSeekableVodOrClip)
+                    setShowPreviousButton(false)
+                    setShowNextButton(false)
+
+                    // Remove apenas os botões nativos duplicados (engrenagem e fullscreen)
+                    // mantendo a Timebar/Seekbar (exo_progress) e o timer (exo_position / exo_duration) intactos!
                     findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.let { nativeGear ->
                         (nativeGear.parent as? ViewGroup)?.removeView(nativeGear)
                     }
@@ -430,6 +942,8 @@ fun CustomExoPlayerWithTrackSelector(
                 playerViewRef = playerView
                 playerView.player = exoPlayer
                 playerView.useController = !isInPipMode
+                playerView.setShowRewindButton(isSeekableVodOrClip)
+                playerView.setShowFastForwardButton(isSeekableVodOrClip)
                 if (isInPipMode) {
                     playerView.hideController()
                     areControlsVisible = false
@@ -437,15 +951,15 @@ fun CustomExoPlayerWithTrackSelector(
             }
         )
 
-        // Controles Unificados (Engrenagem + Fullscreen) fixos no CANTO INFERIOR DIREITO
-        // e sincronizados com o toque na tela
+        // Controles Unificados (Engrenagem + Fullscreen) posicionados no canto superior direito em VODs
+        // (para nunca sobrepor a Timebar/Seekbar de progresso na base do vídeo) ou inferior direito em Lives
         AnimatedVisibility(
             visible = areControlsVisible && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 8.dp, bottom = 6.dp)
+                .align(if (isSeekableVodOrClip) Alignment.TopEnd else Alignment.BottomEnd)
+                .padding(end = 8.dp, top = 8.dp, bottom = 6.dp)
         ) {
             Surface(
                 color = Color(0xBB000000),
@@ -455,7 +969,6 @@ fun CustomExoPlayerWithTrackSelector(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    // 1. Engrenagem Unificada (Qualidade + Áudio + Velocidade)
                     TextButton(
                         onClick = {
                             playerViewRef?.hideController()
@@ -480,7 +993,6 @@ fun CustomExoPlayerWithTrackSelector(
                         )
                     }
 
-                    // 2. Botão Toggle de Tela Cheia (Retrato <-> Paisagem) imediatamente ao lado direito
                     IconButton(
                         onClick = onToggleFullscreen,
                         modifier = Modifier.size(34.dp)
@@ -556,7 +1068,6 @@ private fun applyVideoQualityOverride(
 ) {
     val builder = exoPlayer.trackSelectionParameters.buildUpon()
     if (isAudioOnly) {
-        // Desativa a renderização da trilha de vídeo e mantém apenas o áudio da live
         builder.clearOverridesOfType(C.TRACK_TYPE_VIDEO)
         builder.setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
     } else {
@@ -590,7 +1101,6 @@ private fun UnifiedPlayerSettingsSheetContent(
             .fillMaxWidth()
             .padding(bottom = 24.dp)
     ) {
-        // Seção 1: Velocidade de Reprodução (substitui o menu nativo do ExoPlayer)
         Text(
             text = "Velocidade de Reprodução",
             style = MaterialTheme.typography.titleSmall,
@@ -617,7 +1127,6 @@ private fun UnifiedPlayerSettingsSheetContent(
         Spacer(modifier = Modifier.height(8.dp))
         HorizontalDivider()
 
-        // Seção 2: Qualidade de Vídeo + Modo Apenas Áudio
         Text(
             text = "Qualidade da Transmissão",
             style = MaterialTheme.typography.titleSmall,
@@ -625,7 +1134,6 @@ private fun UnifiedPlayerSettingsSheetContent(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
         )
 
-        // Opção 1: Automático (Adaptive)
         ListItem(
             headlineContent = { Text("Automático (Adaptativo)") },
             trailingContent = {
@@ -637,7 +1145,6 @@ private fun UnifiedPlayerSettingsSheetContent(
             modifier = Modifier.clickable(onClick = onSelectAutoQuality)
         )
 
-        // Opção 2: Apenas Áudio (Economia de banda)
         ListItem(
             headlineContent = { Text("Apenas Áudio (Economia de Dados)") },
             trailingContent = {
@@ -649,7 +1156,6 @@ private fun UnifiedPlayerSettingsSheetContent(
             modifier = Modifier.clickable(onClick = onSelectAudioOnly)
         )
 
-        // Opções do Master Playlist (.m3u8)
         qualities.forEach { option ->
             val isSelected = !isAudioOnly &&
                     selectedQuality?.trackIndex == option.trackIndex &&

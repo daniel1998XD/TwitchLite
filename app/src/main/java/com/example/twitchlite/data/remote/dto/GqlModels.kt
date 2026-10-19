@@ -41,8 +41,10 @@ data class GqlPlaybackTokenResponse(
     @SerializedName("data") val data: GqlData?
 )
 
+// No topo do seu GqlModels.kt, atualize a classe GqlData para incluir videoToken:
 data class GqlData(
-    @SerializedName("streamPlaybackAccessToken") val token: StreamPlaybackAccessToken?
+    @SerializedName("streamPlaybackAccessToken") val token: StreamPlaybackAccessToken?,
+    @SerializedName("videoPlaybackAccessToken") val videoToken: StreamPlaybackAccessToken? = null
 )
 
 data class StreamPlaybackAccessToken(
@@ -467,4 +469,151 @@ data class GqlSearchCategoriesConnection(
 
 data class GqlSearchCategoryEdge(
     @SerializedName("node") val node: GqlGameNode?
+)
+
+// ==================== MODELOS GQL PARA VODS E CLIPS (PLAYBACK + FALLBACK) ====================
+
+data class GqlClipPlaybackRequest(
+    @SerializedName("operationName") val operationName: String = "ClipPlayback_Query",
+    @SerializedName("query") val query: String = CLIP_PLAYBACK_QUERY,
+    @SerializedName("variables") val variables: Map<String, String>
+) {
+    companion object {
+        const val CLIP_PLAYBACK_QUERY = """
+            query ClipPlayback_Query(${'$'}slug: ID!) {
+              clip(slug: ${'$'}slug) {
+                id
+                slug
+                videoQualities {
+                  frameRate
+                  quality
+                  sourceURL
+                }
+                playbackAccessToken(params: {platform: "web", playerBackend: "mediaplayer", playerType: "embed"}) {
+                  signature
+                  value
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlClipPlaybackResponse(
+    @SerializedName("data") val data: GqlClipPlaybackData?
+)
+
+data class GqlClipPlaybackData(
+    @SerializedName("clip") val clip: GqlClipPlaybackNode?
+)
+
+data class GqlClipPlaybackNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("slug") val slug: String?,
+    @SerializedName("videoQualities") val videoQualities: List<GqlClipQualityNode>?,
+    @SerializedName("playbackAccessToken") val playbackAccessToken: StreamPlaybackAccessToken?
+)
+
+data class GqlClipQualityNode(
+    @SerializedName("frameRate") val frameRate: Float?,
+    @SerializedName("quality") val quality: String?,
+    @SerializedName("sourceURL") val sourceUrl: String?
+)
+
+data class GqlChannelVideosAndClipsRequest(
+    @SerializedName("operationName") val operationName: String = "ChannelVideosAndClips_Query",
+    @SerializedName("query") val query: String = CHANNEL_VIDEOS_CLIPS_QUERY,
+    @SerializedName("variables") val variables: Map<String, Any>
+) {
+    companion object {
+        const val CHANNEL_VIDEOS_CLIPS_QUERY = """
+            query ChannelVideosAndClips_Query(${'$'}login: String!, ${'$'}first: Int!) {
+              user(login: ${'$'}login) {
+                id
+                login
+                displayName
+                videos(first: ${'$'}first) {
+                  edges {
+                    node {
+                      id
+                      title
+                      viewCount
+                      lengthSeconds
+                      publishedAt
+                      previewThumbnailURL(width: 440, height: 248)
+                    }
+                  }
+                }
+                clips(first: ${'$'}first, criteria: { period: ALL_TIME }) {
+                  edges {
+                    node {
+                      id
+                      slug
+                      title
+                      viewCount
+                      durationSeconds
+                      createdAt
+                      thumbnailURL(width: 440, height: 248)
+                      curator {
+                        displayName
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlChannelVideosAndClipsResponse(
+    @SerializedName("data") val data: GqlChannelVideosAndClipsData?
+)
+
+data class GqlChannelVideosAndClipsData(
+    @SerializedName("user") val user: GqlChannelVideosClipsUserNode?
+)
+
+data class GqlChannelVideosClipsUserNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("login") val login: String?,
+    @SerializedName("displayName") val displayName: String?,
+    @SerializedName("videos") val videos: GqlVideoConnection?,
+    @SerializedName("clips") val clips: GqlClipConnection?
+)
+
+data class GqlVideoConnection(
+    @SerializedName("edges") val edges: List<GqlVideoEdge>?
+)
+
+data class GqlVideoEdge(
+    @SerializedName("node") val node: GqlVideoNode?
+)
+
+data class GqlVideoNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("title") val title: String?,
+    @SerializedName("viewCount") val viewCount: Int?,
+    @SerializedName("lengthSeconds") val lengthSeconds: Int?,
+    @SerializedName("publishedAt") val publishedAt: String?,
+    @SerializedName("previewThumbnailURL") val previewThumbnailUrl: String?
+)
+
+data class GqlClipConnection(
+    @SerializedName("edges") val edges: List<GqlClipEdge>?
+)
+
+data class GqlClipEdge(
+    @SerializedName("node") val node: GqlClipNode?
+)
+
+data class GqlClipNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("slug") val slug: String?,
+    @SerializedName("title") val title: String?,
+    @SerializedName("viewCount") val viewCount: Int?,
+    @SerializedName("durationSeconds") val durationSeconds: Int?,
+    @SerializedName("createdAt") val createdAt: String?,
+    @SerializedName("thumbnailURL") val thumbnailUrl: String?,
+    @SerializedName("curator") val curator: GqlBroadcasterNode?
 )
