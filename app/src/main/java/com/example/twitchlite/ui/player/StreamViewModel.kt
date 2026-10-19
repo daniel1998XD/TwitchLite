@@ -18,8 +18,6 @@ import com.example.twitchlite.di.AppContainer
 import com.example.twitchlite.domain.model.BufferConfig
 import com.example.twitchlite.domain.model.ChatMessage
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +26,10 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+import java.util.TimeZone
 
 enum class PlaybackContentType {
     LIVE,
@@ -36,12 +38,28 @@ enum class PlaybackContentType {
     OFFLINE
 }
 
+/**
+ * Pacotes de filtro de tempo para VODs (ordenados por data) e Clips (ordenados por visualizações).
+ */
+enum class MediaTimeFilter(
+    val label: String,
+    val helixVodPeriod: String,
+    val gqlClipPeriod: String
+) {
+    HOURS_24("24 horas", "day", "LAST_DAY"),
+    WEEK("1 semana", "week", "LAST_WEEK"),
+    MONTH("1 mês", "month", "LAST_MONTH"),
+    YEAR("Neste ano", "all", "ALL_TIME"),
+    ALL("Todos", "all", "ALL_TIME")
+}
+
 data class ChannelVodUiModel(
     val id: String,
     val title: String,
     val thumbnailUrl: String,
     val durationFormatted: String,
     val viewCount: Int,
+    val createdAtIso: String,
     val createdAtFormatted: String
 )
 
@@ -53,6 +71,7 @@ data class ChannelClipUiModel(
     val durationFormatted: String,
     val viewCount: Int,
     val creatorName: String,
+    val createdAtIso: String,
     val createdAtFormatted: String
 )
 
@@ -60,7 +79,7 @@ sealed interface StreamUiState {
     data object Loading : StreamUiState
     data class Ready(
         val channelLogin: String,
-        val hlsUrl: String?, // Null quando o canal está Offline e nenhum VOD/Clip foi selecionado ainda
+        val hlsUrl: String?,
         val bufferConfig: BufferConfig,
         val contentType: PlaybackContentType = PlaybackContentType.LIVE,
         val isChannelCurrentlyLive: Boolean = true,
@@ -89,24 +108,49 @@ class StreamViewModel(
     private val _lastAutoClaimNotification = MutableStateFlow<String?>(null)
     val lastAutoClaimNotification: StateFlow<String?> = _lastAutoClaimNotification.asStateFlow()
 
-    // Estados das Abas de VODs e Clips do Canal
+    // ==================== ESTADOS DE VODS (PAGINAÇÃO + FILTRO DE DATA) ====================
+    private val _selectedVodFilter = MutableStateFlow(MediaTimeFilter.ALL)
+    val selectedVodFilter: StateFlow<MediaTimeFilter> = _selectedVodFilter.asStateFlow()
+
     private val _channelVods = MutableStateFlow<List<ChannelVodUiModel>>(emptyList())
     val channelVods: StateFlow<List<ChannelVodUiModel>> = _channelVods.asStateFlow()
+
+    private val _isLoadingVods = MutableStateFlow(false)
+    val isLoadingVods: StateFlow<Boolean> = _isLoadingVods.asStateFlow()
+
+    private val _isLoadingMoreVods = MutableStateFlow(false)
+    val isLoadingMoreVods: StateFlow<Boolean> = _isLoadingMoreVods.asStateFlow()
+
+    private val _canLoadMoreVods = MutableStateFlow(false)
+    val canLoadMoreVods: StateFlow<Boolean> = _canLoadMoreVods.asStateFlow()
+
+    // ==================== ESTADOS DE CLIPS (PAGINAÇÃO + FILTRO DE VIEWS) ====================
+    private val _selectedClipFilter = MutableStateFlow(MediaTimeFilter.ALL)
+    val selectedClipFilter: StateFlow<MediaTimeFilter> = _selectedClipFilter.asStateFlow()
 
     private val _channelClips = MutableStateFlow<List<ChannelClipUiModel>>(emptyList())
     val channelClips: StateFlow<List<ChannelClipUiModel>> = _channelClips.asStateFlow()
 
-    private val _isLoadingMediaLists = MutableStateFlow(false)
-    val isLoadingMediaLists: StateFlow<Boolean> = _isLoadingMediaLists.asStateFlow()
+    private val _isLoadingClips = MutableStateFlow(false)
+    val isLoadingClips: StateFlow<Boolean> = _isLoadingClips.asStateFlow()
+
+    private val _isLoadingMoreClips = MutableStateFlow(false)
+    val isLoadingMoreClips: StateFlow<Boolean> = _isLoadingMoreClips.asStateFlow()
+
+    private val _canLoadMoreClips = MutableStateFlow(false)
+    val canLoadMoreClips: StateFlow<Boolean> = _canLoadMoreClips.asStateFlow()
 
     private val _isLoadingVodPlayback = MutableStateFlow(false)
     val isLoadingVodPlayback: StateFlow<Boolean> = _isLoadingVodPlayback.asStateFlow()
 
     private var autoClaimJob: Job? = null
     private var currentLoadedChannel: String? = null
+    private var cachedHelixUserId: String? = null
+
+    private var vodsNextCursor: String? = null
+    private var clipsNextCursor: String? = null
 
     init {
-        // Quando o IRC detectar o room-id do canal atual, carrega os emotes 7TV/BTTV/FFZ dele
         viewModelScope.launch {
             ircClient.currentRoomId.collectLatest { roomId ->
                 if (!roomId.isNullOrBlank()) {
@@ -122,21 +166,26 @@ class StreamViewModel(
             return
         }
         currentLoadedChannel = cleanChannel
+        cachedHelixUserId = null
+        vodsNextCursor = null
+        clipsNextCursor = null
 
         _uiState.value = StreamUiState.Loading
         _channelVods.value = emptyList()
         _channelClips.value = emptyList()
+        _selectedVodFilter.value = MediaTimeFilter.ALL
+        _selectedClipFilter.value = MediaTimeFilter.ALL
 
         // 1. Pré-carrega emotes globais 7TV/BTTV/FFZ
         viewModelScope.launch {
             emoteRepository.loadGlobalEmotesIfNeeded()
         }
 
-        // 2. Busca VODs (/helix/videos) e Clips (/helix/clips) do canal em paralelo
-        loadChannelVodsAndClips(cleanChannel)
+        // 2. Carrega a primeira página de VODs e Clips do canal
+        fetchVods(reset = true)
+        fetchClips(reset = true)
 
         // 3. Tenta extrair a Master Playlist HLS (.m3u8) da Live
-        // Se o canal estiver OFFLINE, entra em modo Perfil Offline (sem travar em tela de erro!)
         viewModelScope.launch {
             extractorRepository.extractHlsMasterPlaylistUrl(cleanChannel)
                 .onSuccess { m3u8Url ->
@@ -151,7 +200,6 @@ class StreamViewModel(
                     )
                 }
                 .onFailure {
-                    // Canal está Offline: abre a tela do canal com os VODs e Clips disponíveis
                     _uiState.value = StreamUiState.Ready(
                         channelLogin = cleanChannel,
                         hlsUrl = null,
@@ -164,107 +212,148 @@ class StreamViewModel(
                 }
         }
 
-        // 4. Conecta ao Chat IRC (funciona inclusive em chat de canais offline)
+        // 4. Conecta ao Chat IRC
         ircClient.connect(
             channel = cleanChannel,
             oauthToken = tokenManager.getAccessToken(),
             username = tokenManager.getUsername()
         )
 
-        // 5. Inicia o loop de Auto-Claim de Channel Points e Twitch Drops em background
+        // 5. Inicia o loop de Auto-Claim
         startAutoClaimLoop(cleanChannel)
     }
 
+    fun onVodFilterSelected(filter: MediaTimeFilter) {
+        if (_selectedVodFilter.value == filter && _channelVods.value.isNotEmpty()) return
+        _selectedVodFilter.value = filter
+        fetchVods(reset = true)
+    }
+
+    fun loadMoreVods() {
+        if (_isLoadingVods.value || _isLoadingMoreVods.value || !_canLoadMoreVods.value) return
+        fetchVods(reset = false)
+    }
+
+    fun onClipFilterSelected(filter: MediaTimeFilter) {
+        if (_selectedClipFilter.value == filter && _channelClips.value.isNotEmpty()) return
+        _selectedClipFilter.value = filter
+        fetchClips(reset = true)
+    }
+
+    fun loadMoreClips() {
+        if (_isLoadingClips.value || _isLoadingMoreClips.value || !_canLoadMoreClips.value) return
+        fetchClips(reset = false)
+    }
+
+    private suspend fun resolveHelixUserId(channelLogin: String): String? {
+        cachedHelixUserId?.let { return it }
+        val accessToken = tokenManager.getAccessToken()?.trim()
+        val clientId = AppContainer.TWITCH_CLIENT_ID
+        if (accessToken.isNullOrBlank() || clientId.isBlank()) return null
+
+        return runCatching {
+            val res = helixApi.getUserByLogin(
+                bearerToken = "Bearer $accessToken",
+                clientId = clientId,
+                login = channelLogin
+            )
+            res.users.firstOrNull()?.id?.also { cachedHelixUserId = it }
+        }.getOrNull()
+    }
+
     /**
-     * Busca a lista de VODs e Clips do canal usando a API Helix (/helix/videos e /helix/clips),
-     * com fallback automático via GQL caso o token OAuth não esteja configurado.
+     * Busca VODs ordenados pela data mais recente (sort = "time"),
+     * respeitando o filtro de período selecionado e o cursor de paginação ("Ver mais").
      */
-    fun loadChannelVodsAndClips(channelLogin: String = currentLoadedChannel.orEmpty()) {
-        val cleanChannel = channelLogin.trim().lowercase()
-        if (cleanChannel.isBlank()) return
+    private fun fetchVods(reset: Boolean) {
+        val cleanChannel = currentLoadedChannel ?: return
+        val activeFilter = _selectedVodFilter.value
+
+        if (reset) {
+            vodsNextCursor = null
+            _channelVods.value = emptyList()
+            _canLoadMoreVods.value = false
+            _isLoadingVods.value = true
+        } else {
+            _isLoadingMoreVods.value = true
+        }
 
         viewModelScope.launch {
-            _isLoadingMediaLists.value = true
-
             val accessToken = tokenManager.getAccessToken()?.trim()
             val clientId = AppContainer.TWITCH_CLIENT_ID
+            val cutoffMillis = getCutoffEpochMillis(activeFilter)
 
-            var loadedFromHelix = false
+            var handledByHelix = false
 
             if (!accessToken.isNullOrBlank() && clientId.isNotBlank()) {
-                runCatching {
-                    val bearer = "Bearer $accessToken"
-                    val userRes = helixApi.getUserByLogin(
-                        bearerToken = bearer,
-                        clientId = clientId,
-                        login = cleanChannel
-                    )
-                    val targetUserId = userRes.users.firstOrNull()?.id
-                        ?: throw IllegalStateException("Usuário não encontrado na Helix")
+                val userId = resolveHelixUserId(cleanChannel)
+                if (!userId.isNullOrBlank()) {
+                    runCatching {
+                        val response = helixApi.getChannelVideos(
+                            bearerToken = "Bearer $accessToken",
+                            clientId = clientId,
+                            userId = userId,
+                            first = 20,
+                            afterCursor = vodsNextCursor,
+                            sort = "time",
+                            period = activeFilter.helixVodPeriod,
+                            type = "all"
+                        )
 
-                    coroutineScope {
-                        val vodsDeferred = async {
-                            helixApi.getChannelVideos(
-                                bearerToken = bearer,
-                                clientId = clientId,
-                                userId = targetUserId,
-                                first = 30,
-                                type = "all"
-                            ).videos.map { dto ->
-                                ChannelVodUiModel(
-                                    id = dto.id,
-                                    title = dto.title,
-                                    thumbnailUrl = dto.getFormattedThumbnail(440, 248),
-                                    durationFormatted = formatHelixDuration(dto.duration),
-                                    viewCount = dto.viewCount,
-                                    createdAtFormatted = formatIsoDate(dto.createdAt)
-                                )
-                            }
+                        val rawList = response.videos.map { dto ->
+                            ChannelVodUiModel(
+                                id = dto.id,
+                                title = dto.title,
+                                thumbnailUrl = dto.getFormattedThumbnail(440, 248),
+                                durationFormatted = formatHelixDuration(dto.duration),
+                                viewCount = dto.viewCount,
+                                createdAtIso = dto.createdAt.orEmpty(),
+                                createdAtFormatted = formatIsoDate(dto.createdAt)
+                            )
                         }
 
-                        val clipsDeferred = async {
-                            helixApi.getChannelClips(
-                                bearerToken = bearer,
-                                clientId = clientId,
-                                broadcasterId = targetUserId,
-                                first = 30
-                            ).clips.map { dto ->
-                                ChannelClipUiModel(
-                                    id = dto.id,
-                                    slug = dto.id,
-                                    title = dto.title,
-                                    thumbnailUrl = dto.thumbnailUrl.orEmpty(),
-                                    durationFormatted = "${dto.duration.toInt()}s",
-                                    viewCount = dto.viewCount,
-                                    creatorName = dto.creatorName ?: cleanChannel,
-                                    createdAtFormatted = formatIsoDate(dto.createdAt)
-                                )
-                            }
+                        // Filtra pela data de corte (especialmente útil para "Neste ano")
+                        val filteredList = if (cutoffMillis != null) {
+                            rawList.filter { isIsoDateAfterOrEqual(it.createdAtIso, cutoffMillis) }
+                        } else {
+                            rawList
                         }
 
-                        Pair(vodsDeferred.await(), clipsDeferred.await())
+                        val nextCursor = response.pagination?.cursor
+                        // Se a página trouxe itens que já ficaram mais antigos que o corte, encerra a paginação
+                        val reachedTimeLimit = cutoffMillis != null && filteredList.size < rawList.size
+
+                        Triple(filteredList, nextCursor, !nextCursor.isNullOrBlank() && !reachedTimeLimit && rawList.isNotEmpty())
+                    }.onSuccess { (newVods, nextCursor, hasMore) ->
+                        vodsNextCursor = nextCursor
+                        _channelVods.value = (_channelVods.value + newVods)
+                            .distinctBy { it.id }
+                            .sortedByDescending { it.createdAtIso }
+                        _canLoadMoreVods.value = hasMore
+                        handledByHelix = true
                     }
-                }.onSuccess { (vods, clips) ->
-                    _channelVods.value = vods
-                    _channelClips.value = clips
-                    loadedFromHelix = true
                 }
             }
 
-            // Fallback via GQL (oauthHeader = null) caso o usuário não esteja logado na Helix
-            if (!loadedFromHelix) {
+            // Fallback via GQL (oauthHeader = null) com suporte a cursor e filtro de tempo
+            if (!handledByHelix) {
                 runCatching {
                     val response = gqlApi.queryChannelVideosAndClips(
                         oauthHeader = null,
                         request = GqlChannelVideosAndClipsRequest(
                             variables = mapOf(
                                 "login" to cleanChannel,
-                                "first" to 30
+                                "first" to 20,
+                                "vodAfter" to vodsNextCursor,
+                                "clipAfter" to null,
+                                "clipPeriod" to activeFilter.gqlClipPeriod
                             )
                         )
                     )
-                    val userNode = response.data?.user
-                    val vods = userNode?.videos?.edges.orEmpty().mapNotNull { edge ->
+                    val videoConn = response.data?.user?.videos
+                    val edges = videoConn?.edges.orEmpty()
+
+                    val rawList = edges.mapNotNull { edge ->
                         val node = edge.node ?: return@mapNotNull null
                         val id = node.id ?: return@mapNotNull null
                         ChannelVodUiModel(
@@ -273,10 +362,122 @@ class StreamViewModel(
                             thumbnailUrl = node.previewThumbnailUrl.orEmpty(),
                             durationFormatted = formatSecondsToDuration(node.lengthSeconds ?: 0),
                             viewCount = node.viewCount ?: 0,
+                            createdAtIso = node.publishedAt.orEmpty(),
                             createdAtFormatted = formatIsoDate(node.publishedAt)
                         )
                     }
-                    val clips = userNode?.clips?.edges.orEmpty().mapNotNull { edge ->
+
+                    val filteredList = if (cutoffMillis != null) {
+                        rawList.filter { isIsoDateAfterOrEqual(it.createdAtIso, cutoffMillis) }
+                    } else {
+                        rawList
+                    }
+
+                    val lastCursor = edges.lastOrNull()?.cursor
+                    val hasNextPage = videoConn?.pageInfo?.hasNextPage == true
+                    val reachedTimeLimit = cutoffMillis != null && filteredList.size < rawList.size
+
+                    Triple(filteredList, lastCursor, hasNextPage && !reachedTimeLimit && !lastCursor.isNullOrBlank())
+                }.onSuccess { (newVods, nextCursor, hasMore) ->
+                    vodsNextCursor = nextCursor
+                    _channelVods.value = (_channelVods.value + newVods)
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.createdAtIso }
+                    _canLoadMoreVods.value = hasMore
+                }
+            }
+
+            _isLoadingVods.value = false
+            _isLoadingMoreVods.value = false
+        }
+    }
+
+    /**
+     * Busca Clips ordenados por mais visualizações (viewCount decrescente),
+     * aplicando o intervalo RFC3339 (started_at / ended_at) na Helix e o cursor de paginação ("Ver mais").
+     */
+    private fun fetchClips(reset: Boolean) {
+        val cleanChannel = currentLoadedChannel ?: return
+        val activeFilter = _selectedClipFilter.value
+
+        if (reset) {
+            clipsNextCursor = null
+            _channelClips.value = emptyList()
+            _canLoadMoreClips.value = false
+            _isLoadingClips.value = true
+        } else {
+            _isLoadingMoreClips.value = true
+        }
+
+        viewModelScope.launch {
+            val accessToken = tokenManager.getAccessToken()?.trim()
+            val clientId = AppContainer.TWITCH_CLIENT_ID
+            val cutoffMillis = getCutoffEpochMillis(activeFilter)
+            val (startedAtRfc3339, endedAtRfc3339) = getHelixClipDateRange(activeFilter)
+
+            var handledByHelix = false
+
+            if (!accessToken.isNullOrBlank() && clientId.isNotBlank()) {
+                val userId = resolveHelixUserId(cleanChannel)
+                if (!userId.isNullOrBlank()) {
+                    runCatching {
+                        val response = helixApi.getChannelClips(
+                            bearerToken = "Bearer $accessToken",
+                            clientId = clientId,
+                            broadcasterId = userId,
+                            first = 20,
+                            afterCursor = clipsNextCursor,
+                            startedAt = startedAtRfc3339,
+                            endedAt = endedAtRfc3339
+                        )
+
+                        val mappedClips = response.clips.map { dto ->
+                            ChannelClipUiModel(
+                                id = dto.id,
+                                slug = dto.id,
+                                title = dto.title,
+                                thumbnailUrl = dto.thumbnailUrl.orEmpty(),
+                                durationFormatted = "${dto.duration.toInt()}s",
+                                viewCount = dto.viewCount,
+                                creatorName = dto.creatorName ?: cleanChannel,
+                                createdAtIso = dto.createdAt.orEmpty(),
+                                createdAtFormatted = formatIsoDate(dto.createdAt)
+                            )
+                        }
+
+                        val nextCursor = response.pagination?.cursor
+                        Triple(mappedClips, nextCursor, !nextCursor.isNullOrBlank() && mappedClips.isNotEmpty())
+                    }.onSuccess { (newClips, nextCursor, hasMore) ->
+                        clipsNextCursor = nextCursor
+                        // Mantém sempre ordenado por mais visualizações
+                        _channelClips.value = (_channelClips.value + newClips)
+                            .distinctBy { it.id }
+                            .sortedByDescending { it.viewCount }
+                        _canLoadMoreClips.value = hasMore
+                        handledByHelix = true
+                    }
+                }
+            }
+
+            // Fallback via GQL (oauthHeader = null) com suporte a cursor e filtro de tempo
+            if (!handledByHelix) {
+                runCatching {
+                    val response = gqlApi.queryChannelVideosAndClips(
+                        oauthHeader = null,
+                        request = GqlChannelVideosAndClipsRequest(
+                            variables = mapOf(
+                                "login" to cleanChannel,
+                                "first" to 20,
+                                "vodAfter" to null,
+                                "clipAfter" to clipsNextCursor,
+                                "clipPeriod" to activeFilter.gqlClipPeriod
+                            )
+                        )
+                    )
+                    val clipConn = response.data?.user?.clips
+                    val edges = clipConn?.edges.orEmpty()
+
+                    val rawClips = edges.mapNotNull { edge ->
                         val node = edge.node ?: return@mapNotNull null
                         val slug = node.slug ?: node.id ?: return@mapNotNull null
                         ChannelClipUiModel(
@@ -287,23 +488,35 @@ class StreamViewModel(
                             durationFormatted = "${node.durationSeconds ?: 0}s",
                             viewCount = node.viewCount ?: 0,
                             creatorName = node.curator?.displayName ?: cleanChannel,
+                            createdAtIso = node.createdAt.orEmpty(),
                             createdAtFormatted = formatIsoDate(node.createdAt)
                         )
                     }
-                    Pair(vods, clips)
-                }.onSuccess { (vods, clips) ->
-                    _channelVods.value = vods
-                    _channelClips.value = clips
+
+                    val filteredClips = if (activeFilter == MediaTimeFilter.YEAR && cutoffMillis != null) {
+                        rawClips.filter { isIsoDateAfterOrEqual(it.createdAtIso, cutoffMillis) }
+                    } else {
+                        rawClips
+                    }
+
+                    val lastCursor = edges.lastOrNull()?.cursor
+                    val hasNextPage = clipConn?.pageInfo?.hasNextPage == true
+
+                    Triple(filteredClips, lastCursor, hasNextPage && !lastCursor.isNullOrBlank())
+                }.onSuccess { (newClips, nextCursor, hasMore) ->
+                    clipsNextCursor = nextCursor
+                    _channelClips.value = (_channelClips.value + newClips)
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.viewCount }
+                    _canLoadMoreClips.value = hasMore
                 }
             }
 
-            _isLoadingMediaLists.value = false
+            _isLoadingClips.value = false
+            _isLoadingMoreClips.value = false
         }
     }
 
-    /**
-     * Extrai a URL HLS (.m3u8) de um VOD sem anúncios via GQL + Usher e inicia a reprodução no ExoPlayer.
-     */
     fun playVod(vod: ChannelVodUiModel) {
         val currentState = _uiState.value as? StreamUiState.Ready ?: return
         _isLoadingVodPlayback.value = true
@@ -354,9 +567,6 @@ class StreamViewModel(
         }
     }
 
-    /**
-     * Extrai a URL direta (.mp4) de um Clip via GQL e reproduz no ExoPlayer com barra de progresso.
-     */
     fun playClip(clip: ChannelClipUiModel) {
         val currentState = _uiState.value as? StreamUiState.Ready ?: return
         _isLoadingVodPlayback.value = true
@@ -393,10 +603,6 @@ class StreamViewModel(
         }
     }
 
-    /**
-     * Retorna para a transmissão ao vivo caso o usuário estivesse assistindo a um VOD/Clip
-     * de um canal que está em live no momento.
-     */
     fun returnToLiveStream() {
         val currentState = _uiState.value as? StreamUiState.Ready ?: return
         val backupLiveUrl = currentState.liveHlsUrlBackup ?: return
@@ -441,9 +647,59 @@ class StreamViewModel(
         ircClient.disconnect()
     }
 
+    // ==================== HELPERS DE JANELA DE TEMPO (RFC3339 UTC) ====================
+
+    private fun getCutoffEpochMillis(filter: MediaTimeFilter): Long? {
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+        return when (filter) {
+            MediaTimeFilter.HOURS_24 -> {
+                cal.add(Calendar.HOUR_OF_DAY, -24)
+                cal.timeInMillis
+            }
+            MediaTimeFilter.WEEK -> {
+                cal.add(Calendar.DAY_OF_YEAR, -7)
+                cal.timeInMillis
+            }
+            MediaTimeFilter.MONTH -> {
+                cal.add(Calendar.DAY_OF_YEAR, -30)
+                cal.timeInMillis
+            }
+            MediaTimeFilter.YEAR -> {
+                cal.set(Calendar.MONTH, Calendar.JANUARY)
+                cal.set(Calendar.DAY_OF_MONTH, 1)
+                cal.set(Calendar.HOUR_OF_DAY, 0)
+                cal.set(Calendar.MINUTE, 0)
+                cal.set(Calendar.SECOND, 0)
+                cal.set(Calendar.MILLISECOND, 0)
+                cal.timeInMillis
+            }
+            MediaTimeFilter.ALL -> null
+        }
+    }
+
+    private fun getHelixClipDateRange(filter: MediaTimeFilter): Pair<String?, String?> {
+        val cutoffMillis = getCutoffEpochMillis(filter) ?: return Pair(null, null)
+        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val startedAt = sdf.format(cutoffMillis)
+        val endedAt = sdf.format(System.currentTimeMillis())
+        return Pair(startedAt, endedAt)
+    }
+
+    private fun isIsoDateAfterOrEqual(isoDate: String?, cutoffMillis: Long): Boolean {
+        if (isoDate.isNullOrBlank()) return true
+        return runCatching {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val parsed = sdf.parse(isoDate)?.time ?: return true
+            parsed >= cutoffMillis
+        }.getOrDefault(true)
+    }
+
     private fun formatHelixDuration(raw: String): String {
         if (raw.isBlank()) return ""
-        // Converte "4h12m30s" ou "25m10s" para formato legível "04:12:30"
         val hours = Regex("(\\d+)h").find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val minutes = Regex("(\\d+)m").find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val seconds = Regex("(\\d+)s").find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: 0
@@ -468,7 +724,6 @@ class StreamViewModel(
 
     private fun formatIsoDate(isoDate: String?): String {
         if (isoDate.isNullOrBlank() || isoDate.length < 10) return ""
-        // Converte "2026-10-18T..." para "18/10/2026"
         val parts = isoDate.substring(0, 10).split("-")
         return if (parts.size == 3) "${parts[2]}/${parts[1]}/${parts[0]}" else isoDate.take(10)
     }

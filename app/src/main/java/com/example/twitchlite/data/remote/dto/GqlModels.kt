@@ -523,17 +523,27 @@ data class GqlClipQualityNode(
 data class GqlChannelVideosAndClipsRequest(
     @SerializedName("operationName") val operationName: String = "ChannelVideosAndClips_Query",
     @SerializedName("query") val query: String = CHANNEL_VIDEOS_CLIPS_QUERY,
-    @SerializedName("variables") val variables: Map<String, Any>
+    @SerializedName("variables") val variables: Map<String, @JvmSuppressWildcards Any?>
 ) {
     companion object {
         const val CHANNEL_VIDEOS_CLIPS_QUERY = """
-            query ChannelVideosAndClips_Query(${'$'}login: String!, ${'$'}first: Int!) {
+            query ChannelVideosAndClips_Query(
+              ${'$'}login: String!,
+              ${'$'}first: Int!,
+              ${'$'}vodAfter: Cursor,
+              ${'$'}clipAfter: Cursor,
+              ${'$'}clipPeriod: ClipsPeriod!
+            ) {
               user(login: ${'$'}login) {
                 id
                 login
                 displayName
-                videos(first: ${'$'}first) {
+                videos(first: ${'$'}first, after: ${'$'}vodAfter, sort: TIME) {
+                  pageInfo {
+                    hasNextPage
+                  }
                   edges {
+                    cursor
                     node {
                       id
                       title
@@ -544,8 +554,12 @@ data class GqlChannelVideosAndClipsRequest(
                     }
                   }
                 }
-                clips(first: ${'$'}first, criteria: { period: ALL_TIME }) {
+                clips(first: ${'$'}first, after: ${'$'}clipAfter, criteria: { period: ${'$'}clipPeriod }) {
+                  pageInfo {
+                    hasNextPage
+                  }
                   edges {
+                    cursor
                     node {
                       id
                       slug
@@ -582,11 +596,17 @@ data class GqlChannelVideosClipsUserNode(
     @SerializedName("clips") val clips: GqlClipConnection?
 )
 
+data class GqlPageInfo(
+    @SerializedName("hasNextPage") val hasNextPage: Boolean = false
+)
+
 data class GqlVideoConnection(
+    @SerializedName("pageInfo") val pageInfo: GqlPageInfo?,
     @SerializedName("edges") val edges: List<GqlVideoEdge>?
 )
 
 data class GqlVideoEdge(
+    @SerializedName("cursor") val cursor: String?,
     @SerializedName("node") val node: GqlVideoNode?
 )
 
@@ -600,10 +620,12 @@ data class GqlVideoNode(
 )
 
 data class GqlClipConnection(
+    @SerializedName("pageInfo") val pageInfo: GqlPageInfo?,
     @SerializedName("edges") val edges: List<GqlClipEdge>?
 )
 
 data class GqlClipEdge(
+    @SerializedName("cursor") val cursor: String?,
     @SerializedName("node") val node: GqlClipNode?
 )
 

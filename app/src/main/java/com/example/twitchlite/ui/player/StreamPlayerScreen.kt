@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.LiveTv
@@ -113,9 +114,20 @@ fun StreamPlayerScreen(
     val thirdPartyEmotes by viewModel.thirdPartyEmotes.collectAsStateWithLifecycle()
     val autoClaimNotice by viewModel.lastAutoClaimNotification.collectAsStateWithLifecycle()
 
+    // Estados de VODs (Filtro de tempo + Lista + Paginação)
+    val selectedVodFilter by viewModel.selectedVodFilter.collectAsStateWithLifecycle()
     val channelVods by viewModel.channelVods.collectAsStateWithLifecycle()
+    val isLoadingVods by viewModel.isLoadingVods.collectAsStateWithLifecycle()
+    val isLoadingMoreVods by viewModel.isLoadingMoreVods.collectAsStateWithLifecycle()
+    val canLoadMoreVods by viewModel.canLoadMoreVods.collectAsStateWithLifecycle()
+
+    // Estados de Clips (Filtro de tempo + Lista + Paginação)
+    val selectedClipFilter by viewModel.selectedClipFilter.collectAsStateWithLifecycle()
     val channelClips by viewModel.channelClips.collectAsStateWithLifecycle()
-    val isLoadingMediaLists by viewModel.isLoadingMediaLists.collectAsStateWithLifecycle()
+    val isLoadingClips by viewModel.isLoadingClips.collectAsStateWithLifecycle()
+    val isLoadingMoreClips by viewModel.isLoadingMoreClips.collectAsStateWithLifecycle()
+    val canLoadMoreClips by viewModel.canLoadMoreClips.collectAsStateWithLifecycle()
+
     val isLoadingVodPlayback by viewModel.isLoadingVodPlayback.collectAsStateWithLifecycle()
 
     var availableQualities by remember { mutableStateOf<List<VideoQualityOption>>(emptyList()) }
@@ -125,7 +137,6 @@ fun StreamPlayerScreen(
     var showSettingsSheet by remember { mutableStateOf(false) }
     var activePlayer by remember { mutableStateOf<ExoPlayer?>(null) }
 
-    // Aba selecionada entre o Player e o Chat (Chat Ao Vivo | VODs | Clips)
     var selectedTab by rememberSaveable(channelLogin) { mutableStateOf(ChannelContentTab.CHAT) }
     var hasAutoSwitchedForOffline by rememberSaveable(channelLogin) { mutableStateOf(false) }
 
@@ -133,7 +144,6 @@ fun StreamPlayerScreen(
         viewModel.loadStream(channelLogin)
     }
 
-    // Se o canal estiver Offline ao abrir, muda automaticamente para a aba de VODs
     LaunchedEffect(uiState) {
         val readyState = uiState as? StreamUiState.Ready
         if (readyState != null && !readyState.isChannelCurrentlyLive && !hasAutoSwitchedForOffline) {
@@ -237,7 +247,6 @@ fun StreamPlayerScreen(
         }
 
         is StreamUiState.Ready -> {
-            // Reseta os seletores de qualidade ao trocar de mídia (ex: de Live para VOD)
             LaunchedEffect(state.hlsUrl) {
                 selectedQuality = null
                 isAudioOnly = false
@@ -288,7 +297,6 @@ fun StreamPlayerScreen(
                             }
                         }
                     } else {
-                        // Banner 16:9 exibido quando o canal está Offline e nenhum VOD/Clip foi escolhido ainda
                         OfflineChannelHeaderBanner(
                             channelLogin = state.channelLogin,
                             isLoadingPlayback = isLoadingVodPlayback,
@@ -309,7 +317,7 @@ fun StreamPlayerScreen(
                 )
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // 1. Área Superior 16:9 (Player de Live/VOD/Clip ou Banner de Canal Offline)
+                    // 1. Área Superior 16:9 (Player ou Banner Offline)
                     videoSurfaceContent(
                         Modifier
                             .fillMaxWidth()
@@ -319,7 +327,6 @@ fun StreamPlayerScreen(
                         false
                     )
 
-                    // Faixa informativa quando estiver reproduzindo um VOD ou Clip
                     if (state.contentType == PlaybackContentType.VOD ||
                         state.contentType == PlaybackContentType.CLIP
                     ) {
@@ -416,8 +423,13 @@ fun StreamPlayerScreen(
                             ChannelContentTab.VODS -> {
                                 ChannelVodsTabContent(
                                     vods = channelVods,
-                                    isLoading = isLoadingMediaLists,
-                                    onVodClick = { vod -> viewModel.playVod(vod) },
+                                    selectedFilter = selectedVodFilter,
+                                    isLoadingInitial = isLoadingVods,
+                                    isLoadingMore = isLoadingMoreVods,
+                                    canLoadMore = canLoadMoreVods,
+                                    onSelectFilter = viewModel::onVodFilterSelected,
+                                    onLoadMore = viewModel::loadMoreVods,
+                                    onVodClick = viewModel::playVod,
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
@@ -425,8 +437,13 @@ fun StreamPlayerScreen(
                             ChannelContentTab.CLIPS -> {
                                 ChannelClipsTabContent(
                                     clips = channelClips,
-                                    isLoading = isLoadingMediaLists,
-                                    onClipClick = { clip -> viewModel.playClip(clip) },
+                                    selectedFilter = selectedClipFilter,
+                                    isLoadingInitial = isLoadingClips,
+                                    isLoadingMore = isLoadingMoreClips,
+                                    canLoadMore = canLoadMoreClips,
+                                    onSelectFilter = viewModel::onClipFilterSelected,
+                                    onLoadMore = viewModel::loadMoreClips,
+                                    onClipClick = viewModel::playClip,
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
@@ -435,7 +452,6 @@ fun StreamPlayerScreen(
                 }
             }
 
-            // Menu Unificado (Qualidade HLS + Apenas Áudio + Velocidade de Reprodução)
             if (showSettingsSheet && !isInPipMode) {
                 ModalBottomSheet(
                     onDismissRequest = { showSettingsSheet = false }
@@ -471,6 +487,54 @@ fun StreamPlayerScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Barra horizontal de filtros de período (24 horas, 1 semana, 1 mês, Neste ano, Todos)
+ * compartilhada pelas abas de VODs e Clips.
+ */
+@Composable
+private fun MediaTimeFilterBar(
+    selectedFilter: MediaTimeFilter,
+    sortSubtitle: String,
+    onSelectFilter: (MediaTimeFilter) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF141417))
+            .padding(top = 8.dp, bottom = 6.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MediaTimeFilter.entries.forEach { filter ->
+                FilterChip(
+                    selected = selectedFilter == filter,
+                    onClick = { onSelectFilter(filter) },
+                    label = {
+                        Text(
+                            text = filter.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selectedFilter == filter) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                )
+            }
+        }
+        Text(
+            text = sortSubtitle,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.LightGray,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)
+        )
+        HorizontalDivider(color = Color(0xFF26262C), modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -534,125 +598,176 @@ private fun OfflineChannelHeaderBanner(
 @Composable
 private fun ChannelVodsTabContent(
     vods: List<ChannelVodUiModel>,
-    isLoading: Boolean,
+    selectedFilter: MediaTimeFilter,
+    isLoadingInitial: Boolean,
+    isLoadingMore: Boolean,
+    canLoadMore: Boolean,
+    onSelectFilter: (MediaTimeFilter) -> Unit,
+    onLoadMore: () -> Unit,
     onVodClick: (ChannelVodUiModel) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    when {
-        isLoading && vods.isEmpty() -> {
-            Box(modifier = modifier, contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        }
+    Column(modifier = modifier) {
+        MediaTimeFilterBar(
+            selectedFilter = selectedFilter,
+            sortSubtitle = "Ordenado por data (mais recentes primeiro)",
+            onSelectFilter = onSelectFilter
+        )
 
-        vods.isEmpty() -> {
-            Box(
-                modifier = modifier.padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Nenhum VOD (gravação) disponível neste canal.",
-                    color = Color.LightGray,
-                    style = MaterialTheme.typography.bodyMedium
-                )
+        when {
+            isLoadingInitial && vods.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
             }
-        }
 
-        else -> {
-            LazyColumn(
-                modifier = modifier,
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(
-                    items = vods,
-                    key = { "vod_${it.id}" }
-                ) { vod ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF18181B))
-                            .clickable { onVodClick(vod) }
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Box {
-                            AsyncImage(
-                                model = vod.thumbnailUrl,
-                                contentDescription = vod.title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .width(148.dp)
-                                    .aspectRatio(16f / 9f)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color.DarkGray)
-                            )
-                            if (vod.durationFormatted.isNotBlank()) {
-                                Text(
-                                    text = vod.durationFormatted,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
+            vods.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Nenhum VOD encontrado para o período \"${selectedFilter.label}\".",
+                        color = Color.LightGray,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = vods,
+                        key = { "vod_${it.id}" }
+                    ) { vod ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF18181B))
+                                .clickable { onVodClick(vod) }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Box {
+                                AsyncImage(
+                                    model = vod.thumbnailUrl,
+                                    contentDescription = vod.title,
+                                    contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .padding(4.dp)
-                                        .background(Color(0xDD000000), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                        .width(148.dp)
+                                        .aspectRatio(16f / 9f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.DarkGray)
                                 )
-                            }
-                            Surface(
-                                color = Color(0xAA000000),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(4.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = null,
-                                        tint = Color(0xFFA970FF),
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(2.dp))
+                                if (vod.durationFormatted.isNotBlank()) {
                                     Text(
-                                        text = "VOD",
+                                        text = vod.durationFormatted,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color.White,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(4.dp)
+                                            .background(Color(0xDD000000), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Surface(
+                                    color = Color(0xAA000000),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(4.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            tint = Color(0xFFA970FF),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text(
+                                            text = "VOD",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = vod.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "${vod.viewCount} visualizações",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFA970FF)
+                                )
+                                if (vod.createdAtFormatted.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Publicado em ${vod.createdAtFormatted}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.LightGray
                                     )
                                 }
                             }
                         }
+                    }
 
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = vod.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "${vod.viewCount} visualizações",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFFA970FF)
-                            )
-                            if (vod.createdAtFormatted.isNotBlank()) {
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Publicado em ${vod.createdAtFormatted}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.LightGray
-                                )
+                    // Botão "Ver mais" para carregar a próxima página de VODs
+                    if (canLoadMore || isLoadingMore) {
+                        item(key = "vods_load_more") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoadingMore) {
+                                    CircularProgressIndicator(modifier = Modifier.size(26.dp))
+                                } else {
+                                    OutlinedButton(
+                                        onClick = onLoadMore,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ExpandMore,
+                                            contentDescription = null
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Ver mais VODs")
+                                    }
+                                }
                             }
                         }
                     }
@@ -665,127 +780,178 @@ private fun ChannelVodsTabContent(
 @Composable
 private fun ChannelClipsTabContent(
     clips: List<ChannelClipUiModel>,
-    isLoading: Boolean,
+    selectedFilter: MediaTimeFilter,
+    isLoadingInitial: Boolean,
+    isLoadingMore: Boolean,
+    canLoadMore: Boolean,
+    onSelectFilter: (MediaTimeFilter) -> Unit,
+    onLoadMore: () -> Unit,
     onClipClick: (ChannelClipUiModel) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    when {
-        isLoading && clips.isEmpty() -> {
-            Box(modifier = modifier, contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        }
+    Column(modifier = modifier) {
+        MediaTimeFilterBar(
+            selectedFilter = selectedFilter,
+            sortSubtitle = "Ordenado por mais visualizações",
+            onSelectFilter = onSelectFilter
+        )
 
-        clips.isEmpty() -> {
-            Box(
-                modifier = modifier.padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Nenhum Clip encontrado para este canal.",
-                    color = Color.LightGray,
-                    style = MaterialTheme.typography.bodyMedium
-                )
+        when {
+            isLoadingInitial && clips.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
             }
-        }
 
-        else -> {
-            LazyColumn(
-                modifier = modifier,
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(
-                    items = clips,
-                    key = { "clip_${it.id}" }
-                ) { clip ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF18181B))
-                            .clickable { onClipClick(clip) }
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Box {
-                            AsyncImage(
-                                model = clip.thumbnailUrl,
-                                contentDescription = clip.title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .width(148.dp)
-                                    .aspectRatio(16f / 9f)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color.DarkGray)
-                            )
-                            if (clip.durationFormatted.isNotBlank()) {
-                                Text(
-                                    text = clip.durationFormatted,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
+            clips.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Nenhum Clip encontrado para o período \"${selectedFilter.label}\".",
+                        color = Color.LightGray,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = clips,
+                        key = { "clip_${it.id}" }
+                    ) { clip ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF18181B))
+                                .clickable { onClipClick(clip) }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Box {
+                                AsyncImage(
+                                    model = clip.thumbnailUrl,
+                                    contentDescription = clip.title,
+                                    contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .padding(4.dp)
-                                        .background(Color(0xDD000000), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                        .width(148.dp)
+                                        .aspectRatio(16f / 9f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.DarkGray)
                                 )
-                            }
-                            Surface(
-                                color = Color(0xAA000000),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(4.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Movie,
-                                        contentDescription = null,
-                                        tint = Color(0xFFA970FF),
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(2.dp))
+                                if (clip.durationFormatted.isNotBlank()) {
                                     Text(
-                                        text = "CLIP",
+                                        text = clip.durationFormatted,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color.White,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(4.dp)
+                                            .background(Color(0xDD000000), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Surface(
+                                    color = Color(0xAA000000),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(4.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Movie,
+                                            contentDescription = null,
+                                            tint = Color(0xFFA970FF),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text(
+                                            text = "CLIP",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = clip.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "${clip.viewCount} visualizações • Clipado por ${clip.creatorName}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFA970FF),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (clip.createdAtFormatted.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = clip.createdAtFormatted,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.LightGray
                                     )
                                 }
                             }
                         }
+                    }
 
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = clip.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "${clip.viewCount} visualizações • Clipado por ${clip.creatorName}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFFA970FF),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (clip.createdAtFormatted.isNotBlank()) {
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = clip.createdAtFormatted,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.LightGray
-                                )
+                    // Botão "Ver mais" para carregar a próxima página de Clips
+                    if (canLoadMore || isLoadingMore) {
+                        item(key = "clips_load_more") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoadingMore) {
+                                    CircularProgressIndicator(modifier = Modifier.size(26.dp))
+                                } else {
+                                    OutlinedButton(
+                                        onClick = onLoadMore,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ExpandMore,
+                                            contentDescription = null
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Ver mais Clips")
+                                    }
+                                }
                             }
                         }
                     }
@@ -913,14 +1079,11 @@ fun CustomExoPlayerWithTrackSelector(
                     controllerShowTimeoutMs = 3000
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
 
-                    // Em VODs e Clips, habilita os botões de avançar/retroceder 10s além da Timebar (Seekbar)
                     setShowRewindButton(isSeekableVodOrClip)
                     setShowFastForwardButton(isSeekableVodOrClip)
                     setShowPreviousButton(false)
                     setShowNextButton(false)
 
-                    // Remove apenas os botões nativos duplicados (engrenagem e fullscreen)
-                    // mantendo a Timebar/Seekbar (exo_progress) e o timer (exo_position / exo_duration) intactos!
                     findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.let { nativeGear ->
                         (nativeGear.parent as? ViewGroup)?.removeView(nativeGear)
                     }
@@ -951,8 +1114,6 @@ fun CustomExoPlayerWithTrackSelector(
             }
         )
 
-        // Controles Unificados (Engrenagem + Fullscreen) posicionados no canto superior direito em VODs
-        // (para nunca sobrepor a Timebar/Seekbar de progresso na base do vídeo) ou inferior direito em Lives
         AnimatedVisibility(
             visible = areControlsVisible && !isInPipMode,
             enter = fadeIn(),
