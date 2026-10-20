@@ -1,7 +1,5 @@
 package com.example.twitchlite.ui.home
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +17,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -29,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -59,6 +57,7 @@ fun FollowedStreamsScreen(
     val focusManager = LocalFocusManager.current
 
     var showAuthDialog by remember { mutableStateOf(false) }
+    var webViewLoginClientId by remember { mutableStateOf<String?>(null) }
 
     // Tarefa 3: Estado local para controlar o limite de 10 canais seguidos
     var isChannelsExpanded by rememberSaveable { mutableStateOf(false) }
@@ -85,7 +84,7 @@ fun FollowedStreamsScreen(
                         Icon(Icons.Default.Refresh, contentDescription = "Atualizar")
                     }
                     IconButton(onClick = { showAuthDialog = true }) {
-                        Icon(Icons.Default.Key, contentDescription = "Configurar Login OAuth")
+                        Icon(Icons.Default.Key, contentDescription = "Fazer Login na Twitch")
                     }
                 }
             )
@@ -233,19 +232,31 @@ fun FollowedStreamsScreen(
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp)) {
                                         Text(
-                                            text = "Para listar seus canais seguidos da Helix API:",
+                                            text = "Conecte sua conta da Twitch:",
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = refreshState.error.localizedMessage ?: "Configure o OAuth",
+                                            text = refreshState.error.localizedMessage ?: "Configure o Login OAuth",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onErrorContainer
                                         )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Button(onClick = { showAuthDialog = true }) {
-                                            Text("Configurar Token OAuth")
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Button(
+                                            onClick = {
+                                                // Se já tiver um Client-ID salvo, abre a WebView direto;
+                                                // caso contrário, abre o Dialog para informar o Client-ID primeiro.
+                                                if (AppContainer.TWITCH_CLIENT_ID.isNotBlank()) {
+                                                    webViewLoginClientId = AppContainer.TWITCH_CLIENT_ID
+                                                } else {
+                                                    showAuthDialog = true
+                                                }
+                                            }
+                                        ) {
+                                            Icon(Icons.Default.Login, contentDescription = null)
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Fazer Login")
                                         }
                                     }
                                 }
@@ -333,7 +344,7 @@ fun FollowedStreamsScreen(
         }
     }
 
-    // ETAPA 2: Tela Completa de Resultados da Pesquisa (com o Dropdown de Autocomplete integrado!)
+    // ETAPA 2: Tela Completa de Resultados da Pesquisa
     if (homeUiState.isSearchResultsOpen) {
         FullSearchResultsWindow(
             searchQuery = homeUiState.searchQuery,
@@ -365,7 +376,7 @@ fun FollowedStreamsScreen(
         )
     }
 
-    // Janela de Transmissões de uma Categoria Clicada (fica acima da busca se aberta a partir dela)
+    // Janela de Transmissões de uma Categoria Clicada
     val selectedCategory = homeUiState.selectedCategory
     if (selectedCategory != null) {
         CategoryStreamsWindow(
@@ -383,12 +394,36 @@ fun FollowedStreamsScreen(
         )
     }
 
+    // Dialog de Configuração OAuth (Client-ID + Botão para abrir WebView Interna)
     if (showAuthDialog) {
         OAuthConfigDialog(
             onDismiss = { showAuthDialog = false },
-            onSaveToken = { token, clientId ->
+            onOpenWebViewLogin = { chosenClientId ->
+                AppContainer.TWITCH_CLIENT_ID = chosenClientId.trim()
+                showAuthDialog = false
+                webViewLoginClientId = chosenClientId.trim()
+            },
+            onSaveManualToken = { token, clientId ->
                 viewModel.authenticateWithToken(token, clientId)
                 showAuthDialog = false
+            }
+        )
+    }
+
+    // Dialog com a WebView Interna que intercepta automaticamente #access_token=
+    val activeLoginClientId = webViewLoginClientId
+    if (!activeLoginClientId.isNullOrBlank()) {
+        TwitchLoginWebViewDialog(
+            clientId = activeLoginClientId,
+            onTokenExtracted = { extractedToken ->
+                webViewLoginClientId = null
+                viewModel.authenticateWithToken(
+                    accessToken = extractedToken,
+                    customClientId = activeLoginClientId
+                )
+            },
+            onDismiss = {
+                webViewLoginClientId = null
             }
         )
     }
@@ -440,7 +475,6 @@ private fun TwitchStyleSearchBar(
             modifier = Modifier.weight(1f)
         )
 
-        // Botão de Lupa ao lado direito do input (idêntico à barra da Twitch nas imagens)
         FilledIconButton(
             onClick = onSubmitSearch,
             enabled = query.trim().isNotEmpty(),
@@ -457,13 +491,6 @@ private fun TwitchStyleSearchBar(
     }
 }
 
-/**
- * Dropdown de Autocomplete igual à Imagem 2:
- * - Categorias no topo (Capa 3:4 + Nome + Subtítulo "Categoria")
- * - Canais abaixo (Avatar circular + Nome + Selo + Subtítulo "Canal")
- * - Linha com Lupa para abrir a Tela Completa de Resultados da Pesquisa
- * - Linha "Ir para [query]" no rodapé
- */
 @Composable
 private fun SearchAutocompleteDropdown(
     query: String,
@@ -500,7 +527,6 @@ private fun SearchAutocompleteDropdown(
                 }
             }
 
-            // 1. Categorias sugeridas (ex: Black Desert -> "Categoria")
             items(
                 items = categories,
                 key = { "auto_cat_${it.id}" }
@@ -541,7 +567,6 @@ private fun SearchAutocompleteDropdown(
                 }
             }
 
-            // 2. Canais sugeridos (ex: BlackDesertGame -> "Canal")
             items(
                 items = channels,
                 key = { "auto_ch_${it.id}" }
@@ -596,7 +621,6 @@ private fun SearchAutocompleteDropdown(
                 }
             }
 
-            // 3. Linha com ícone de lupa para abrir a Tela Completa de Pesquisa (Imagem 1)
             item(key = "autocomplete_full_search") {
                 Row(
                     modifier = Modifier
@@ -627,7 +651,6 @@ private fun SearchAutocompleteDropdown(
                 }
             }
 
-            // 4. Rodapé "Ir para [query]"
             item(key = "autocomplete_goto") {
                 Text(
                     text = "Ir para $query",
@@ -644,10 +667,6 @@ private fun SearchAutocompleteDropdown(
     }
 }
 
-/**
- * Tela Completa de Resultados da Pesquisa (igual à Imagem 1 do site oficial da Twitch),
- * agora também com o Dropdown de Autocomplete ativo quando o usuário digita uma nova busca!
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FullSearchResultsWindow(
@@ -725,7 +744,6 @@ private fun FullSearchResultsWindow(
                     }
                 )
 
-                // Box que empilha o Dropdown de Autocomplete sobre os resultados da busca atual
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (showAutocompleteDropdown && searchQuery.trim().isNotEmpty()) {
                         SearchAutocompleteDropdown(
@@ -788,7 +806,6 @@ private fun FullSearchResultsWindow(
                             contentPadding = PaddingValues(14.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            // ==================== SEÇÃO 1: CANAIS (Estilo Imagem 1) ====================
                             if (channels.isNotEmpty()) {
                                 item(key = "full_search_channels_header") {
                                     Text(
@@ -845,7 +862,6 @@ private fun FullSearchResultsWindow(
                                 }
                             }
 
-                            // ==================== SEÇÃO 2: CATEGORIAS (Estilo Imagem 1) ====================
                             if (categories.isNotEmpty()) {
                                 item(key = "full_search_categories_header") {
                                     Column {
@@ -1374,21 +1390,23 @@ private fun StreamItemContent(
 @Composable
 private fun OAuthConfigDialog(
     onDismiss: () -> Unit,
-    onSaveToken: (token: String, clientId: String) -> Unit
+    onOpenWebViewLogin: (clientId: String) -> Unit,
+    onSaveManualToken: (token: String, clientId: String) -> Unit
 ) {
-    val context = LocalContext.current
     var clientIdInput by remember { mutableStateOf(AppContainer.TWITCH_CLIENT_ID) }
     var tokenInput by remember { mutableStateOf("") }
+    var showManualTokenField by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Login OAuth 2.0 (Twitch Helix)") },
+        title = { Text("Login OAuth 2.0 (Twitch)") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Informe o Client-ID do seu app na Twitch e autentique via navegador ou cole seu Access Token (escopos: user:read:follows chat:read chat:edit):",
+                    text = "Informe o Client-ID do seu app no console da Twitch e entre diretamente pelo aplicativo:",
                     style = MaterialTheme.typography.bodySmall
                 )
+
                 OutlinedTextField(
                     value = clientIdInput,
                     onValueChange = { clientIdInput = it },
@@ -1396,42 +1414,61 @@ private fun OAuthConfigDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = tokenInput,
-                    onValueChange = { tokenInput = it },
-                    label = { Text("Access Token OAuth") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedButton(
-                    onClick = {
-                        AppContainer.TWITCH_CLIENT_ID = clientIdInput.trim()
-                        val authUri = Uri.parse("https://id.twitch.tv/oauth2/authorize")
-                            .buildUpon()
-                            .appendQueryParameter("client_id", clientIdInput.trim())
-                            .appendQueryParameter("redirect_uri", AppContainer.OAUTH_REDIRECT_URI)
-                            .appendQueryParameter("response_type", "token")
-                            .appendQueryParameter("scope", "user:read:follows chat:read chat:edit")
-                            .build()
-                        context.startActivity(Intent(Intent.ACTION_VIEW, authUri))
-                    },
+
+                // Botão Principal: Abre a WebView interna e captura o #access_token= automaticamente
+                Button(
+                    onClick = { onOpenWebViewLogin(clientIdInput.trim()) },
+                    enabled = clientIdInput.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF9146FF),
+                        contentColor = Color.White
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Abrir Login no Navegador")
+                    Icon(Icons.Default.Login, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Fazer Login na Twitch", fontWeight = FontWeight.Bold)
+                }
+
+                // Opção secundária caso o usuário queira colar um token manualmente
+                TextButton(
+                    onClick = { showManualTokenField = !showManualTokenField },
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
+                    Text(
+                        text = if (showManualTokenField) {
+                            "Ocultar inserção manual de token"
+                        } else {
+                            "Já tenho um Access Token (inserir manualmente)"
+                        },
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+
+                if (showManualTokenField) {
+                    OutlinedTextField(
+                        value = tokenInput,
+                        onValueChange = { tokenInput = it },
+                        label = { Text("Access Token OAuth") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         },
         confirmButton = {
-            Button(
-                onClick = { onSaveToken(tokenInput, clientIdInput) },
-                enabled = tokenInput.isNotBlank() && clientIdInput.isNotBlank()
-            ) {
-                Text("Salvar")
+            if (showManualTokenField) {
+                Button(
+                    onClick = { onSaveManualToken(tokenInput, clientIdInput) },
+                    enabled = tokenInput.isNotBlank() && clientIdInput.isNotBlank()
+                ) {
+                    Text("Salvar Token Manual")
+                }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancelar")
+                Text("Fechar")
             }
         }
     )
