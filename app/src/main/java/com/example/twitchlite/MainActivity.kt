@@ -53,7 +53,8 @@ class MainActivity : ComponentActivity() {
         Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
             try {
                 // Cria um arquivo crash_log.txt na pasta do app
-                val logFile = java.io.File(getExternalFilesDir(null), "crash_log.txt")
+                val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                val logFile = java.io.File(downloadsDir, "TwitchLite_crash_log.txt")
                 logFile.writeText("Erro fatal:\n${exception.stackTraceToString()}")
             } catch (e: Exception) {
                 e.printStackTrace()
