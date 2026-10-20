@@ -64,6 +64,9 @@ data class GqlFollowedGamesRequest(
         const val FOLLOWED_GAMES_QUERY = """
             query FollowedGames_Query(${'$'}login: String!, ${'$'}first: Int!) {
               currentUser {
+                id
+                login
+                displayName
                 followedGames(first: ${'$'}first, type: ALL) {
                   nodes {
                     id
@@ -76,6 +79,9 @@ data class GqlFollowedGamesRequest(
                 }
               }
               user(login: ${'$'}login) {
+                id
+                login
+                displayName
                 followedGames(first: ${'$'}first, type: ALL) {
                   nodes {
                     id
@@ -107,7 +113,10 @@ data class GqlFollowedGamesData(
 )
 
 data class GqlUserFollowedGamesWrapper(
-    @SerializedName("followedGames") val followedGames: GqlFollowedGamesConnection?
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("login") val login: String? = null,
+    @SerializedName("displayName") val displayName: String? = null,
+    @SerializedName("followedGames") val followedGames: GqlFollowedGamesConnection? = null
 )
 
 data class GqlFollowedGamesConnection(
@@ -560,4 +569,93 @@ data class GqlClipNode(
     @SerializedName("createdAt") val createdAt: String?,
     @SerializedName("thumbnailURL") val thumbnailUrl: String?,
     @SerializedName("curator") val curator: GqlBroadcasterNode?
+)
+
+// ==================== MODELOS GQL PARA CANAIS SEGUIDOS AO VIVO ====================
+
+data class GqlFollowedLiveStreamsRequest(
+    @SerializedName("operationName") val operationName: String = "FollowedLiveStreams_Query",
+    @SerializedName("query") val query: String = FOLLOWED_LIVE_STREAMS_QUERY,
+    @SerializedName("variables") val variables: GqlFollowedLiveStreamsVariables
+) {
+    companion object {
+        const val FOLLOWED_LIVE_STREAMS_QUERY = """
+            query FollowedLiveStreams_Query(${'$'}first: Int!, ${'$'}after: Cursor) {
+              currentUser {
+                id
+                followedLiveUsers(first: ${'$'}first, after: ${'$'}after) {
+                  pageInfo {
+                    hasNextPage
+                  }
+                  edges {
+                    cursor
+                    node {
+                      id
+                      login
+                      displayName
+                      stream {
+                        id
+                        title
+                        type
+                        viewersCount
+                        createdAt
+                        previewImageURL(width: 440, height: 248)
+                        game {
+                          id
+                          name
+                          displayName
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """
+    }
+}
+
+data class GqlFollowedLiveStreamsVariables(
+    @SerializedName("first") val first: Int = 20,
+    @SerializedName("after") val after: String? = null
+)
+
+data class GqlFollowedLiveStreamsResponse(
+    @SerializedName("data") val data: GqlFollowedLiveStreamsData?
+)
+
+data class GqlFollowedLiveStreamsData(
+    @SerializedName("currentUser") val currentUser: GqlFollowedLiveCurrentUser?
+)
+
+data class GqlFollowedLiveCurrentUser(
+    @SerializedName("id") val id: String?,
+    @SerializedName("followedLiveUsers") val followedLiveUsers: GqlFollowedLiveUserConnection?
+)
+
+data class GqlFollowedLiveUserConnection(
+    @SerializedName("pageInfo") val pageInfo: GqlPageInfo?,
+    @SerializedName("edges") val edges: List<GqlFollowedLiveUserEdge>?
+)
+
+data class GqlFollowedLiveUserEdge(
+    @SerializedName("cursor") val cursor: String?,
+    @SerializedName("node") val node: GqlFollowedLiveUserNode?
+)
+
+data class GqlFollowedLiveUserNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("login") val login: String?,
+    @SerializedName("displayName") val displayName: String?,
+    @SerializedName("stream") val stream: GqlFollowedLiveStreamNode?
+)
+
+data class GqlFollowedLiveStreamNode(
+    @SerializedName("id") val id: String?,
+    @SerializedName("title") val title: String?,
+    @SerializedName("type") val type: String?,
+    @SerializedName("viewersCount") val viewersCount: Int?,
+    @SerializedName("createdAt") val createdAt: String?,
+    @SerializedName("previewImageURL") val previewImageUrl: String?,
+    @SerializedName("game") val game: GqlSimpleGameNode?
 )

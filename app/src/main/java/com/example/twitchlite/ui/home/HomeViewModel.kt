@@ -121,6 +121,7 @@ class HomeViewModel(
         pagingSourceFactory = {
             FollowedStreamsPagingSource(
                 helixApi = helixApi,
+                gqlApi = gqlApi, // <-- ADICIONE ESTA LINHA AQUI
                 tokenManager = tokenManager,
                 clientId = AppContainer.TWITCH_CLIENT_ID
             ).also { currentPagingSource = it }
@@ -366,38 +367,69 @@ class HomeViewModel(
         }
     }
 
-    fun authenticateWithToken(accessToken: String, customClientId: String) {
+    fun authenticateWithToken(accessToken: String, customClientId: String = "") {
         val cleanToken = accessToken
             .removePrefix("Bearer ")
             .removePrefix("OAuth ")
             .removePrefix("oauth:")
             .trim()
 
-        if (customClientId.isNotBlank()) {
-            AppContainer.TWITCH_CLIENT_ID = customClientId.trim()
-            tokenManager.saveClientId(customClientId.trim())
-        }
+        val effectiveClientId = customClientId.trim().ifBlank { "kimne78kx3ncx6brgo4mv6wki5h1ko" }
+        AppContainer.TWITCH_CLIENT_ID = effectiveClientId
+        tokenManager.saveClientId(effectiveClientId)
 
         viewModelScope.launch {
             runCatching {
+                // 1ª Tentativa: Resolve o usuário logado via GQL (funciona com o cookie auth-token da WebView!)
+                val gqlResponse = runCatching {
+                    gqlApi.queryFollowedGames(
+                        oauthHeader = "OAuth $cleanToken",
+                        request = GqlFollowedGamesRequest(
+                            variables = GqlFollowedGamesVariables(login = "", first = 30)
+                        )
+                    )
+                }.getOrNull()
+
+                val gqlUser = gqlResponse?.data?.currentUser
+                if (gqlUser != null && !gqlUser.id.isNullOrBlank() && !gqlUser.login.isNullOrBlank()) {
+                    tokenManager.saveAuthData(
+                        accessToken = cleanToken,
+                        refreshToken = null,
+                        userId = gqlUser.id,
+                        username = gqlUser.login
+                    )
+
+                    // Já aproveita a resposta para preencher as Categorias Seguidas imediatamente!
+                    val categories = gqlUser.followedGames?.nodes
+                        .orEmpty()
+                        .map { it.toUiModel() }
+                        .distinctBy { it.id }
+
+                    if (categories.isNotEmpty()) {
+                        _uiState.update { it.copy(followedCategories = categories, isLoadingCategories = false) }
+                    }
+                    return@runCatching
+                }
+
+                // 2ª Tentativa (Fallback): Resolve via Helix API caso seja um token OAuth de desenvolvedor
                 val userResponse = helixApi.getCurrentUser(
                     bearerToken = "Bearer $cleanToken",
-                    clientId = AppContainer.TWITCH_CLIENT_ID
+                    clientId = effectiveClientId
                 )
-                val user = userResponse.users.firstOrNull()
-                    ?: throw IllegalStateException("Nenhum usuário retornado pela Helix API.")
+                val helixUser = userResponse.users.firstOrNull()
+                    ?: throw IllegalStateException("Não foi possível identificar o usuário logado.")
 
                 tokenManager.saveAuthData(
                     accessToken = cleanToken,
                     refreshToken = null,
-                    userId = user.id,
-                    username = user.login
+                    userId = helixUser.id,
+                    username = helixUser.login
                 )
             }.onSuccess {
                 _authStatusMessage.value = "Autenticado como @${tokenManager.getUsername()}"
                 refreshStreams()
             }.onFailure { err ->
-                _authStatusMessage.value = "Erro na autenticação Helix: ${err.localizedMessage}"
+                _authStatusMessage.value = "Erro na autenticação: ${err.localizedMessage}"
             }
         }
     }

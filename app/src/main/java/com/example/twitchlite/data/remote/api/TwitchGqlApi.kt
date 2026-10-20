@@ -1,5 +1,8 @@
 package com.example.twitchlite.data.remote.api
 
+// Adicione estes 2 imports no topo do TwitchGqlApi.kt:
+import com.example.twitchlite.data.remote.dto.GqlFollowedLiveStreamsRequest
+import com.example.twitchlite.data.remote.dto.GqlFollowedLiveStreamsResponse
 import com.example.twitchlite.data.remote.dto.GqlCategoryStreamsRequest
 import com.example.twitchlite.data.remote.dto.GqlCategoryStreamsResponse
 import com.example.twitchlite.data.remote.dto.GqlChannelVideosAndClipsRequest
@@ -22,6 +25,17 @@ import retrofit2.http.Headers
 import retrofit2.http.POST
 
 interface TwitchGqlApi {
+
+    // Adicione este método dentro da interface TwitchGqlApi:
+    @Headers(
+        "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Content-Type: application/json"
+    )
+    @POST("gql")
+    suspend fun queryFollowedLiveStreams(
+        @Header("Authorization") oauthHeader: String,
+        @Body request: GqlFollowedLiveStreamsRequest
+    ): GqlFollowedLiveStreamsResponse
     @Headers(
         "Client-ID: kimne78kx3ncx6brgo4mv6wki5h1ko",
         "Origin: https://player.twitch.tv",

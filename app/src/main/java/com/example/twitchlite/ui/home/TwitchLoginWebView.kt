@@ -2,7 +2,6 @@ package com.example.twitchlite.ui.home
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.net.Uri
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -40,48 +39,36 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.twitchlite.di.AppContainer
+
+private const val TWITCH_DIRECT_LOGIN_URL = "https://www.twitch.tv/login"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun TwitchLoginWebViewDialog(
-    clientId: String,
-    redirectUri: String = AppContainer.OAUTH_REDIRECT_URI,
-    scopes: String = "user:read:follows chat:read chat:edit",
+    clientId: String = "",
     onTokenExtracted: (accessToken: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val authUrl = remember(clientId, redirectUri, scopes) {
-        Uri.parse("https://id.twitch.tv/oauth2/authorize")
-            .buildUpon()
-            .appendQueryParameter("client_id", clientId.trim())
-            .appendQueryParameter("redirect_uri", redirectUri.trim())
-            .appendQueryParameter("response_type", "token")
-            .appendQueryParameter("scope", scopes)
-            .appendQueryParameter("force_verify", "true")
-            .build()
-            .toString()
-    }
-
     var loadProgress by remember { mutableIntStateOf(0) }
     var hasExtractedToken by remember { mutableStateOf(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
-    // Função centralizada que verifica se a URL contém #access_token=
-    val tryInterceptToken: (String?) -> Boolean = { url ->
-        if (!hasExtractedToken && !url.isNullOrBlank()) {
-            val extractedToken = extractAccessTokenFromUrl(url, redirectUri)
-            if (!extractedToken.isNullOrBlank()) {
+    // Verifica se a Twitch já gravou o cookie "auth-token" após o login bem-sucedido
+    val checkAndExtractAuthCookie: () -> Boolean = {
+        if (!hasExtractedToken) {
+            val cookieToken = extractTwitchAuthTokenFromCookies()
+            if (!cookieToken.isNullOrBlank()) {
                 hasExtractedToken = true
+                CookieManager.getInstance().flush()
                 webViewRef?.stopLoading()
-                onTokenExtracted(extractedToken)
+                onTokenExtracted(cookieToken)
                 true
             } else {
                 false
             }
         } else {
-            false
+            true
         }
     }
 
@@ -125,18 +112,18 @@ fun TwitchLoginWebViewDialog(
                         )
                     },
                     actions = {
-                        // Botão útil caso o usuário queira limpar a sessão do WebView e logar em outra conta
+                        // Permite limpar os cookies caso queira trocar de conta da Twitch
                         IconButton(
                             onClick = {
                                 CookieManager.getInstance().removeAllCookies(null)
                                 CookieManager.getInstance().flush()
                                 webViewRef?.clearCache(true)
-                                webViewRef?.loadUrl(authUrl)
+                                webViewRef?.loadUrl(TWITCH_DIRECT_LOGIN_URL)
                             }
                         ) {
                             Icon(
                                 imageVector = Icons.Default.DeleteSweep,
-                                contentDescription = "Limpar sessão e recarregar"
+                                contentDescription = "Limpar sessão e trocar de conta"
                             )
                         }
                     }
@@ -167,21 +154,25 @@ fun TwitchLoginWebViewDialog(
                                     ViewGroup.LayoutParams.MATCH_PARENT
                                 )
 
-                                CookieManager.getInstance().setAcceptCookie(true)
-                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                val cookieManager = CookieManager.getInstance()
+                                cookieManager.setAcceptCookie(true)
+                                cookieManager.setAcceptThirdPartyCookies(this, true)
 
                                 settings.apply {
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
                                     databaseEnabled = true
                                     cacheMode = WebSettings.LOAD_DEFAULT
-                                    // Remove a assinatura "; wv" do WebView para evitar bloqueios no login OAuth
+                                    // Usa User-Agent de navegador Chrome Android padrão (sem "; wv")
                                     userAgentString = userAgentString.replace("; wv", "")
                                 }
 
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                         loadProgress = newProgress
+                                        if (newProgress >= 80) {
+                                            checkAndExtractAuthCookie()
+                                        }
                                     }
                                 }
 
@@ -190,20 +181,7 @@ fun TwitchLoginWebViewDialog(
                                         view: WebView?,
                                         request: WebResourceRequest?
                                     ): Boolean {
-                                        val targetUrl = request?.url?.toString()
-                                        if (tryInterceptToken(targetUrl)) {
-                                            // Cancela o carregamento do localhost para não exibir página de erro
-                                            return true
-                                        }
-                                        return false
-                                    }
-
-                                    @Deprecated("Deprecated in Java")
-                                    override fun shouldOverrideUrlLoading(
-                                        view: WebView?,
-                                        url: String?
-                                    ): Boolean {
-                                        if (tryInterceptToken(url)) {
+                                        if (checkAndExtractAuthCookie()) {
                                             return true
                                         }
                                         return false
@@ -214,15 +192,23 @@ fun TwitchLoginWebViewDialog(
                                         url: String?,
                                         favicon: Bitmap?
                                     ) {
-                                        if (tryInterceptToken(url)) {
-                                            view?.stopLoading()
+                                        if (checkAndExtractAuthCookie()) {
                                             return
                                         }
                                         super.onPageStarted(view, url, favicon)
                                     }
+
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        checkAndExtractAuthCookie()
+                                    }
                                 }
 
-                                loadUrl(authUrl)
+                                // Se já houver um cookie antigo salvo e o usuário abriu a tela de login,
+                                // captura imediatamente ou carrega a página de login da Twitch
+                                if (!checkAndExtractAuthCookie()) {
+                                    loadUrl(TWITCH_DIRECT_LOGIN_URL)
+                                }
                             }
                         }
                     )
@@ -233,29 +219,30 @@ fun TwitchLoginWebViewDialog(
 }
 
 /**
- * Extrai o `access_token` tanto do fragmento (`#access_token=...`) quanto de query parameter
- * quando a Twitch redireciona de volta para o `redirect_uri` (ex: http://localhost#access_token=xyz&scope=...).
+ * Lê os cookies dos domínios da Twitch no CookieManager e extrai o token `auth-token`
+ * gerado quando o usuário faz login em `https://www.twitch.tv/login`.
  */
-private fun extractAccessTokenFromUrl(url: String, redirectUri: String): String? {
-    val startsWithRedirect = url.startsWith(redirectUri, ignoreCase = true)
-    val containsTokenMarker = url.contains("#access_token=") || url.contains("&access_token=") || url.contains("?access_token=")
+private fun extractTwitchAuthTokenFromCookies(): String? {
+    val cookieManager = CookieManager.getInstance()
+    val candidateUrls = listOf(
+        "https://www.twitch.tv",
+        "https://twitch.tv",
+        "https://m.twitch.tv",
+        "https://id.twitch.tv"
+    )
 
-    if (!startsWithRedirect && !containsTokenMarker) return null
-
-    // 1. Tenta extrair do fragmento após o '#' (padrão do Implicit Grant Flow da Twitch)
-    val fragment = url.substringAfter("#", missingDelimiterValue = "")
-    if (fragment.isNotEmpty()) {
-        val params = fragment.split("&")
-        for (param in params) {
-            val pair = param.split("=", limit = 2)
-            if (pair.size == 2 && pair[0] == "access_token") {
-                return Uri.decode(pair[1]).trim().takeIf { it.isNotEmpty() }
+    for (domainUrl in candidateUrls) {
+        val rawCookies = cookieManager.getCookie(domainUrl) ?: continue
+        val pairs = rawCookies.split(";")
+        for (pair in pairs) {
+            val parts = pair.trim().split("=", limit = 2)
+            if (parts.size == 2 && parts[0].trim() == "auth-token") {
+                val token = parts[1].trim()
+                if (token.isNotBlank() && token != "null") {
+                    return token
+                }
             }
         }
     }
-
-    // 2. Fallback caso venha na query string
-    return runCatching {
-        Uri.parse(url).getQueryParameter("access_token")?.trim()?.takeIf { it.isNotEmpty() }
-    }.getOrNull()
+    return null
 }

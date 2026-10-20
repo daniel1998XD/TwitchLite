@@ -16,7 +16,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -56,8 +55,7 @@ fun FollowedStreamsScreen(
     val homeUiState by viewModel.uiState.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
 
-    var showAuthDialog by remember { mutableStateOf(false) }
-    var webViewLoginClientId by remember { mutableStateOf<String?>(null) }
+    var showWebViewLogin by remember { mutableStateOf(false) }
 
     // Tarefa 3: Estado local para controlar o limite de 10 canais seguidos
     var isChannelsExpanded by rememberSaveable { mutableStateOf(false) }
@@ -83,8 +81,8 @@ fun FollowedStreamsScreen(
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Atualizar")
                     }
-                    IconButton(onClick = { showAuthDialog = true }) {
-                        Icon(Icons.Default.Key, contentDescription = "Fazer Login na Twitch")
+                    IconButton(onClick = { showWebViewLogin = true }) {
+                        Icon(Icons.Default.Login, contentDescription = "Fazer Login na Twitch")
                     }
                 }
             )
@@ -243,20 +241,10 @@ fun FollowedStreamsScreen(
                                             color = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                         Spacer(modifier = Modifier.height(10.dp))
-                                        Button(
-                                            onClick = {
-                                                // Se já tiver um Client-ID salvo, abre a WebView direto;
-                                                // caso contrário, abre o Dialog para informar o Client-ID primeiro.
-                                                if (AppContainer.TWITCH_CLIENT_ID.isNotBlank()) {
-                                                    webViewLoginClientId = AppContainer.TWITCH_CLIENT_ID
-                                                } else {
-                                                    showAuthDialog = true
-                                                }
-                                            }
-                                        ) {
+                                        Button(onClick = { showWebViewLogin = true }) {
                                             Icon(Icons.Default.Login, contentDescription = null)
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Fazer Login")
+                                            Text("Fazer Login na Twitch")
                                         }
                                     }
                                 }
@@ -394,36 +382,19 @@ fun FollowedStreamsScreen(
         )
     }
 
-    // Dialog de Configuração OAuth (Client-ID + Botão para abrir WebView Interna)
-    if (showAuthDialog) {
-        OAuthConfigDialog(
-            onDismiss = { showAuthDialog = false },
-            onOpenWebViewLogin = { chosenClientId ->
-                AppContainer.TWITCH_CLIENT_ID = chosenClientId.trim()
-                showAuthDialog = false
-                webViewLoginClientId = chosenClientId.trim()
-            },
-            onSaveManualToken = { token, clientId ->
-                viewModel.authenticateWithToken(token, clientId)
-                showAuthDialog = false
-            }
-        )
-    }
-
-    // Dialog com a WebView Interna que intercepta automaticamente #access_token=
-    val activeLoginClientId = webViewLoginClientId
-    if (!activeLoginClientId.isNullOrBlank()) {
+    // Abre diretamente a WebView Interna ao clicar em Fazer Login
+    if (showWebViewLogin) {
         TwitchLoginWebViewDialog(
-            clientId = activeLoginClientId,
+            clientId = AppContainer.TWITCH_CLIENT_ID,
             onTokenExtracted = { extractedToken ->
-                webViewLoginClientId = null
+                showWebViewLogin = false
                 viewModel.authenticateWithToken(
                     accessToken = extractedToken,
-                    customClientId = activeLoginClientId
+                    customClientId = AppContainer.TWITCH_CLIENT_ID
                 )
             },
             onDismiss = {
-                webViewLoginClientId = null
+                showWebViewLogin = false
             }
         )
     }
@@ -1385,91 +1356,4 @@ private fun StreamItemContent(
             )
         }
     }
-}
-
-@Composable
-private fun OAuthConfigDialog(
-    onDismiss: () -> Unit,
-    onOpenWebViewLogin: (clientId: String) -> Unit,
-    onSaveManualToken: (token: String, clientId: String) -> Unit
-) {
-    var clientIdInput by remember { mutableStateOf(AppContainer.TWITCH_CLIENT_ID) }
-    var tokenInput by remember { mutableStateOf("") }
-    var showManualTokenField by remember { mutableStateOf(false) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Login OAuth 2.0 (Twitch)") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Informe o Client-ID do seu app no console da Twitch e entre diretamente pelo aplicativo:",
-                    style = MaterialTheme.typography.bodySmall
-                )
-
-                OutlinedTextField(
-                    value = clientIdInput,
-                    onValueChange = { clientIdInput = it },
-                    label = { Text("Client-ID") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Botão Principal: Abre a WebView interna e captura o #access_token= automaticamente
-                Button(
-                    onClick = { onOpenWebViewLogin(clientIdInput.trim()) },
-                    enabled = clientIdInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF9146FF),
-                        contentColor = Color.White
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.Login, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Fazer Login na Twitch", fontWeight = FontWeight.Bold)
-                }
-
-                // Opção secundária caso o usuário queira colar um token manualmente
-                TextButton(
-                    onClick = { showManualTokenField = !showManualTokenField },
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                ) {
-                    Text(
-                        text = if (showManualTokenField) {
-                            "Ocultar inserção manual de token"
-                        } else {
-                            "Já tenho um Access Token (inserir manualmente)"
-                        },
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-
-                if (showManualTokenField) {
-                    OutlinedTextField(
-                        value = tokenInput,
-                        onValueChange = { tokenInput = it },
-                        label = { Text("Access Token OAuth") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            if (showManualTokenField) {
-                Button(
-                    onClick = { onSaveManualToken(tokenInput, clientIdInput) },
-                    enabled = tokenInput.isNotBlank() && clientIdInput.isNotBlank()
-                ) {
-                    Text("Salvar Token Manual")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Fechar")
-            }
-        }
-    )
 }
