@@ -48,10 +48,26 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 1. O INTERCEPTADOR DEVE SER A PRIMEIRA LINHA
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
+            try {
+                // Cria um arquivo crash_log.txt na pasta do app
+                val logFile = java.io.File(getExternalFilesDir(null), "crash_log.txt")
+                logFile.writeText("Erro fatal:\n${exception.stackTraceToString()}")
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            // Deixa o app fechar normalmente após salvar
+            defaultHandler?.uncaughtException(thread, exception)
+        }
+
+        // 2. CHAMA O SUPER E SEGUE O FLUXO NORMAL
         super.onCreate(savedInstanceState)
         appContainer = AppContainer(applicationContext)
         extractOAuthTokenFromIntent(intent)
 
+        // O setContent vem logo em seguida (remova a cópia duplicada do interceptador que estava aqui)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(
